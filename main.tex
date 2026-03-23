@@ -1,0 +1,388 @@
+\documentclass[12pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm,mathtools}
+\usepackage{booktabs}
+\usepackage{hyperref}
+
+\title{NES Scheduling Engine: Draft Optimization Model}
+\author{VB}
+\date{}
+
+\begin{document}
+
+\maketitle
+
+\section*{1. Purpose}
+
+This document gives a draft mathematical formulation for the Version 1 weekly planning problem described in \texttt{task.pdf}. The goal is not exact stop sequencing or appointment-time booking. Instead, the model formalizes a \emph{route-first weekly scheduling problem} in which the engine selects a set of feasible route-day proposals, assigns them to crews and vehicles, and produces a reviewable weekly draft schedule.
+
+The formulation is intentionally designed to match the business brief:
+
+\begin{itemize}
+    \item planning is weekly, not day-by-day;
+    \item geography is important but area boundaries are not hard walls;
+    \item special route types are handled before normal route filling;
+    \item human review remains part of the process;
+    \item exact stop order is out of scope for Version 1.
+\end{itemize}
+
+\section*{2. Modeling Approach}
+
+We model the planning problem as a \emph{candidate-route set packing and assignment problem}. Before optimization, the engine generates a finite set of feasible route-day candidates from the candidate job pool using geography, route-type rules, and weekly business policy.
+
+Each route candidate already contains:
+
+\begin{itemize}
+    \item a day of execution;
+    \item a set of jobs that could be grouped together;
+    \item a route type (normal, radiator, overnight, helper-needed, etc.);
+    \item a geography quality score;
+    \item feasibility tags for crews and vehicles.
+\end{itemize}
+
+This avoids encoding exact stop sequencing in the optimization model while still preserving route-first planning.
+
+\section*{3. Assumptions}
+
+The draft formulation uses the following assumptions:
+
+\begin{enumerate}
+    \item The weekly candidate pool has already excluded canceled, urgent/manual, already scheduled, and already-in-workflow jobs.
+    \item Weekly exceptions for technicians, vehicles, long jobs, and installs are available as structured inputs.
+    \item A preprocessing stage generates feasible candidate route-day bundles.
+    \item Duplicate addresses are grouped during preprocessing so that route compactness is measured by unique stop groups rather than raw job count.
+    \item Special routes are given lexicographic priority over normal route filling.
+    \item Area Readiness is derived from selected routes and is not treated as a hard constraint in Version 1.
+\end{enumerate}
+
+\section*{4. Sets and Indices}
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Symbol & Meaning \\
+\midrule
+$J$ & set of candidate jobs for the week \\
+$J^{sp} \subseteq J$ & set of jobs requiring special-route handling \\
+$R$ & set of feasible candidate route-day proposals \\
+$R^{sp} \subseteq R$ & set of special-route candidates \\
+$R^{reg} = R \setminus R^{sp}$ & set of regular route candidates \\
+$C$ & set of feasible crew patterns \\
+$V$ & set of vehicles \\
+$D$ & set of planning days in the week \\
+$A$ & set of business areas \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The set $C$ may contain both one-technician crews and helper-required crew patterns. This lets the model represent two-man work without introducing stop-level sequencing.
+
+\section*{5. Parameters}
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Symbol & Meaning \\
+\midrule
+$a_{jr} \in \{0,1\}$ & equals $1$ if job $j$ is included in route candidate $r$ \\
+$\delta_{rd} \in \{0,1\}$ & equals $1$ if route candidate $r$ is planned for day $d$ \\
+$f_{rcv} \in \{0,1\}$ & equals $1$ if route $r$ is feasible with crew $c$ and vehicle $v$ \\
+$p_j \ge 0$ & base business priority of job $j$ \\
+$u_j \ge 0$ & standby usefulness score of job $j$ \\
+$g_r \ge 0$ & geography quality score of route $r$ \\
+$h_j \ge 0$ & fairness or aging pressure for job $j$ \\
+$\ell_{ar} \ge 0$ & readiness contribution of route $r$ to area $a$ \\
+$H_{cd} \in \mathbb{Z}_{+}$ & available route slots for crew $c$ on day $d$ \\
+$Q_{vd} \in \mathbb{Z}_{+}$ & available route slots for vehicle $v$ on day $d$ \\
+$b_j \in \{0,1\}$ & equals $1$ if job $j$ is eligible for standby output \\
+$\kappa_j \ge 0$ & special-route priority weight for job $j \in J^{sp}$ \\
+$\alpha_s, \beta_s, \gamma_s, \mu_s \ge 0$ & seasonal objective weights for season $s$ \\
+$\theta_a^M, \theta_a^G \ge 0$ & readiness thresholds for area $a$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The seasonal weights allow the planner to shift emphasis across the year:
+
+\begin{itemize}
+    \item in the warm season, geography receives more weight;
+    \item in the cold season, fairness and aging receive more weight.
+\end{itemize}
+
+\section*{6. Decision Variables}
+
+\begin{align*}
+x_{rcv} &\in \{0,1\} && \text{equals $1$ if route candidate $r$ is selected with crew $c$ and vehicle $v$} \\
+y_j &\in \{0,1\} && \text{equals $1$ if job $j$ is scheduled this week} \\
+z_j &\in \{0,1\} && \text{equals $1$ if job $j$ is placed in the standby pool} \\
+\rho_a &\ge 0 && \text{readiness score for area $a$}
+\end{align*}
+
+\section*{7. Core Feasibility Constraints}
+
+\subsection*{7.1 Route assignment feasibility}
+
+Only crew-vehicle combinations declared feasible by preprocessing may be selected:
+
+\[
+x_{rcv} \le f_{rcv}, \qquad \forall r \in R,\; c \in C,\; v \in V.
+\]
+
+\subsection*{7.2 Job uniqueness}
+
+Each job may appear in at most one selected route:
+
+\[
+\sum_{r \in R} \sum_{c \in C} \sum_{v \in V} a_{jr} x_{rcv} \le 1, \qquad \forall j \in J.
+\]
+
+We link the route decisions to the weekly scheduled-job variable:
+
+\[
+y_j = \sum_{r \in R} \sum_{c \in C} \sum_{v \in V} a_{jr} x_{rcv}, \qquad \forall j \in J.
+\]
+
+\subsection*{7.3 Crew capacity by day}
+
+Each crew pattern has limited weekly availability, after weekly exceptions have been applied:
+
+\[
+\sum_{r \in R} \sum_{v \in V} \delta_{rd} x_{rcv} \le H_{cd}, \qquad \forall c \in C,\; d \in D.
+\]
+
+\subsection*{7.4 Vehicle capacity by day}
+
+Each vehicle has limited availability by day:
+
+\[
+\sum_{r \in R} \sum_{c \in C} \delta_{rd} x_{rcv} \le Q_{vd}, \qquad \forall v \in V,\; d \in D.
+\]
+
+\subsection*{7.5 Standby eligibility}
+
+A standby job cannot also be scheduled:
+
+\[
+z_j \le 1 - y_j, \qquad \forall j \in J.
+\]
+
+Only jobs marked as standby-eligible may appear in the standby pool:
+
+\[
+z_j \le b_j, \qquad \forall j \in J.
+\]
+
+\section*{8. Lexicographic Optimization Structure}
+
+The brief says that special route types should be handled before normal route filling. A natural mathematical representation is a \emph{lexicographic} or \emph{two-stage} optimization.
+
+\subsection*{Stage I: prioritize special-route work}
+
+First solve:
+
+\[
+\max \; Z_1 = \sum_{j \in J^{sp}} \kappa_j y_j
+\]
+
+subject to the core feasibility constraints above.
+
+Let $Z_1^{\star}$ denote the optimal value.
+
+\subsection*{Stage II: optimize the weekly draft plan}
+
+Then solve the secondary problem:
+
+\[
+\max \; Z_2 =
+\alpha_s \sum_{j \in J} p_j y_j
++ \beta_s \sum_{r \in R} \sum_{c \in C} \sum_{v \in V} g_r x_{rcv}
++ \gamma_s \sum_{j \in J} h_j y_j
++ \mu_s \sum_{j \in J} u_j z_j
+\]
+
+subject to:
+
+\begin{align*}
+& \sum_{j \in J^{sp}} \kappa_j y_j = Z_1^{\star}, \\
+& \text{all core feasibility constraints.}
+\end{align*}
+
+This means that special-route work is optimized first, and then the normal weekly tradeoff between job value, geographic quality, fairness pressure, and standby quality is optimized without sacrificing the best achievable special-route coverage.
+
+\section*{9. Interpretation of the Objective}
+
+The secondary objective has four terms:
+
+\begin{enumerate}
+    \item $\sum_{j \in J} p_j y_j$: rewards scheduling high-value jobs.
+    \item $\sum_{r,c,v} g_r x_{rcv}$: rewards geographically coherent routes.
+    \item $\sum_{j \in J} h_j y_j$: rewards fairness and aging pressure.
+    \item $\sum_{j \in J} u_j z_j$: rewards standby jobs that are useful substitutes if a scheduled job drops out.
+\end{enumerate}
+
+The seasonal coefficient vector $(\alpha_s, \beta_s, \gamma_s, \mu_s)$ changes by season. For example:
+
+\begin{itemize}
+    \item in March through September, choose $\beta_s$ relatively large so geography dominates;
+    \item in October through February, increase $\gamma_s$ so fairness and aging carry more influence.
+\end{itemize}
+
+\section*{10. Area Readiness Output}
+
+Area Readiness is not treated as a hard constraint in Version 1. Instead, it is computed from the selected routes:
+
+\[
+\rho_a = \sum_{r \in R} \sum_{c \in C} \sum_{v \in V} \ell_{ar} x_{rcv}, \qquad \forall a \in A.
+\]
+
+The plain-language readiness label for each area is then derived post-optimization:
+
+\[
+\text{Readiness}(a) =
+\begin{cases}
+\text{Good}, & \rho_a \ge \theta_a^G, \\
+\text{Moderate}, & \theta_a^M \le \rho_a < \theta_a^G, \\
+\text{Lean}, & \rho_a < \theta_a^M.
+\end{cases}
+\]
+
+This is consistent with the brief: Area Readiness remains a communication layer that should stay credible relative to actual run behavior.
+
+\section*{11. Notes on Preprocessing}
+
+Several business requirements are most naturally enforced before optimization:
+
+\begin{itemize}
+    \item candidate pool eligibility;
+    \item duplicate-address grouping;
+    \item route-day candidate generation;
+    \item route-type tagging;
+    \item crew and vehicle feasibility screening.
+\end{itemize}
+
+Mathematically, those steps determine the data tensors $a_{jr}$, $\delta_{rd}$, $f_{rcv}$, and $\ell_{ar}$.
+
+In particular, the statement ``area boundaries are guidance, not hard walls'' is implemented by allowing cross-area candidate routes during preprocessing whenever their geography score remains strong.
+
+\section*{12. Why This Formulation Fits Version 1}
+
+This formulation is appropriate for Version 1 because it is:
+
+\begin{itemize}
+    \item route-first rather than appointment-first;
+    \item explainable to a non-technical owner;
+    \item consistent with human review;
+    \item compatible with Airtable-managed policy inputs;
+    \item lighter than exact tour optimization;
+    \item able to encode special-route precedence and seasonal fairness tradeoffs.
+\end{itemize}
+
+The model is also a practical bridge to implementation in Pyomo. The binary variables $x_{rcv}$, $y_j$, and $z_j$ lead directly to a mixed-integer linear programming model once the candidate route set has been generated.
+
+\section*{13. Explicitly Out of Scope}
+
+The following elements are intentionally excluded from the Version 1 optimization model:
+
+\begin{itemize}
+    \item exact stop sequencing within a route;
+    \item appointment-time assignment;
+    \item direct ServiceM8 calendar writes;
+    \item speculative machine learning components;
+    \item fully global stop-level vehicle routing across the whole week.
+\end{itemize}
+
+\section*{14. Next Modeling Step}
+
+The next step is to convert this mathematical formulation into a Pyomo implementation with:
+
+\begin{itemize}
+    \item explicit input schemas for jobs, crews, vehicles, exceptions, and route candidates;
+    \item reproducible candidate-route generation rules;
+    \item calibrated seasonal weights;
+    \item test fixtures for special routes, duplicate addresses, standby selection, and area readiness.
+\end{itemize}
+
+\end{document}
+
+\subsubsection*{Key Concepts}
+
+\begin{itemize}
+    \item \textbf{State:} A feasible inspection route starting and ending at node $0$, visiting a subset of nodes $\Omega \subseteq \{1, \ldots, N\}$.
+    \item \textbf{Objective Function:}
+    \[
+    \max\left( \sum_{i=0}^{N}\sum_{j=0}^{N} w_{i} x_{i,j} - \sum_{i=0}^{N}\sum_{j=0}^{N} c \cdot d_{i,j} \cdot x_{i,j} \right)
+    \]
+    \item \textbf{Constraints:} Each candidate route must satisfy the inspection count limit $|\Omega| \leq P$, total time limit $T_{\text{max}}$, and local and global distance constraints.
+    \item \textbf{Temperature:} Controls the acceptance of worse solutions to escape local minima.
+    \item \textbf{Cooling schedule:} Determines how temperature decreases over time.
+\end{itemize}
+
+\subsubsection*{Neighborhood Operations}
+
+To explore the solution space, we define several perturbation operators:
+
+\begin{itemize}
+    \item \textbf{Node Insertion:} Randomly insert a new node $j \notin \Omega$ into the current route at a random position, if it satisfies constraints.
+    \item \textbf{Node Deletion:} Randomly remove a node $j \in \Omega$, except the start node.
+    \item \textbf{Node Swap:} Swap two nodes $i, j \in \Omega$, modifying the order of visits.
+    \item \textbf{External Swap:} Replace a node $i \in \Omega$ with another node $j \notin \Omega$.
+    \item \textbf{2-opt Flip:} Reverse a subsegment of the route to reduce total distance.
+\end{itemize}
+
+\subsubsection*{Simulated Annealing Algorithm}
+
+\begin{algorithm}[H]
+\caption{Simulated Annealing for Inspection Routing}
+\begin{algorithmic}[1]
+\State Initialize route $\Omega_0$ with feasible nodes
+\State $T \gets T_{\text{start}},\ T_{\text{end}} \gets$ final temperature
+\While{$T > T_{\text{end}}$}
+    \For{$k = 1$ to $K$ (inner loop)}
+        \State $r_{\text{new}} \gets$ apply a random neighbor operation to $\Omega$
+        \If{$r_{\text{new}}$ is feasible}
+            \State $\Delta \gets \text{Objective}(r_{\text{new}}) - \text{Objective}(\Omega)$
+            \If{$\Delta > 0$}
+                \State Accept new route
+            \ElsIf{$\exp\left(\frac{\Delta}{T}\right) > \text{random}(0,1)$}
+                \State Accept new route with probability
+            \EndIf
+        \EndIf
+    \EndFor
+    \State $T \gets \alpha T$ \Comment{Cooling: $\alpha \in (0,1)$}
+\EndWhile
+\end{algorithmic}
+\end{algorithm}
+
+\subsubsection*{Feasibility Check}
+
+Every new route $\Omega'$ generated during neighborhood exploration is accepted only if:
+\begin{itemize}
+    \item The number of nodes visited does not exceed $P$.
+    \item The total travel and inspection time is within $T_{\text{max}}$:
+    \[
+    \sum_{(i,j) \in \Omega'} t_{ij} + \tau_j \leq T_{\text{max}}
+    \]
+    \item The distances $d_{ij} \leq D_{\max}$ for entering and exiting zones.
+    \item The step distances $d_{ij} \leq D'_{\max}$ between consecutive visits.
+\end{itemize}
+
+\subsubsection*{Advantages}
+
+Simulated Annealing avoids local optima by probabilistically accepting worse solutions during early stages. With well-chosen operators and cooling schedules, SA efficiently explores complex route spaces.
+
+\subsubsection*{Implementation Notes}
+
+\begin{itemize}
+    \item The initial solution can be constructed greedily by selecting the $P$ nodes with highest $(w_i - c \cdot d_{0i})$ ratios.
+    \item Use a priority queue or randomized selection for neighbor generation.
+    \item Recompute route cost incrementally where possible to improve efficiency.
+\end{itemize}
+
+
+
+
+
+
+
+\end{document}
