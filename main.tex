@@ -1,11 +1,15 @@
 \documentclass[12pt]{article}
 \usepackage[utf8]{inputenc}
 \usepackage[a4paper,margin=1in]{geometry}
-\usepackage{amsmath,amssymb,amsthm,mathtools}
-\usepackage{booktabs}
+\usepackage{amsmath, amssymb}
+\usepackage{graphicx}
 \usepackage{hyperref}
+\usepackage{longtable}
+\usepackage{booktabs}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
 
-\title{NES Scheduling Engine: Draft Optimization Model}
+\title{Weekly Service--Dispatch Routing as a Clustered Vehicle Routing Problem}
 \author{VB}
 \date{}
 
@@ -13,408 +17,485 @@
 
 \maketitle
 
-\section*{1. Purpose}
+% ===================================================================
+\section*{Problem Description}
+% ===================================================================
 
-This document gives a draft mathematical formulation for the Version 1 weekly planning problem described in \texttt{task.pdf}. The goal is not exact stop sequencing or appointment-time booking. Instead, the model formalizes a \emph{route-first weekly scheduling problem} in which the engine selects a set of feasible route-day proposals, assigns them to crews and vehicles, and produces a reviewable weekly draft schedule.
+New England SteamWorks (NES) dispatches multiple technicians with service vehicles to perform maintenance jobs across a wide geographic region every week.
+We model the weekly dispatch--planning task as a \emph{Clustered Vehicle Routing Problem} (Cluster--first, Route--second) with side constraints on technician skills, vehicle capabilities, special route types, and seasonal fairness.
 
-The formulation is intentionally designed to match the business brief:
-
+The planning engine must:
 \begin{itemize}
-    \item planning is weekly, not day-by-day;
-    \item geography is important but area boundaries are not hard walls;
-    \item special route types are handled before normal route filling;
-    \item human review remains part of the process;
-    \item exact stop order is out of scope for Version 1.
+    \item Maximize the total weighted value of jobs served each week;
+    \item Minimize total driving distance within each daily route;
+    \item Respect capacity, time, skill, vehicle, and geographic constraints;
+    \item Produce reviewable route/day proposals (not direct calendar writes).
 \end{itemize}
 
-\section*{2. Modeling Approach}
+Planning is \textbf{route--first}: the engine first determines weekly demand shape and capacity, then builds geographic clusters, then solves an intra--cluster routing problem for each technician--day pair.
 
-We model the planning problem as a \emph{candidate-route set packing and assignment problem}. Before optimization, the engine generates a finite set of feasible route-day candidates from the candidate job pool using geography, route-type rules, and weekly business policy.
-
-Each route candidate already contains:
-
+% ===================================================================
+\section*{Key Objectives (KPIs)}
+% ===================================================================
 \begin{itemize}
-    \item a day of execution;
-    \item a set of jobs that could be grouped together;
-    \item a route type (normal, radiator, overnight, helper-needed, etc.);
-    \item a geography quality score;
-    \item feasibility tags for crews and vehicles.
+    \item \textbf{Primary KPI:} Weighted job score (combines revenue, aging pressure, and seasonal fairness).
+    \item \textbf{Secondary KPIs:} Total driving distance, route compactness, area readiness.
 \end{itemize}
 
-This avoids encoding exact stop sequencing in the optimization model while still preserving route-first planning.
+% ===================================================================
+\section*{System Overview}
+% ===================================================================
 
-\section*{3. Assumptions}
+\begin{itemize}
+    \item \textbf{ServiceM8} --- system of record for jobs, technicians, and operational data.
+    \item \textbf{Airtable} --- scheduling rules, policy settings, review layers.
+    \item \textbf{Python Engine} --- planning, clustering, scoring, routing, and output generation.
+    \item \textbf{Make\,/\,Zapier} --- orchestration and automation between the above.
+\end{itemize}
 
-The draft formulation uses the following assumptions:
+The Python engine consumes structured inputs and produces structured outputs; it is independently testable.
+
+% ===================================================================
+\section*{Sets and Indices}
+% ===================================================================
+\begin{itemize}
+    \item $\mathcal{J} = \{1,\dots,J\}$ --- weekly candidate job pool (after exclusion filters).
+    \item $\mathcal{T} = \{1,\dots,T\}$ --- available technicians.
+    \item $\mathcal{V} = \{1,\dots,V\}$ --- available vehicles.
+    \item $\mathcal{D} = \{1,\dots,D\}$ --- working days in the planning week ($D \leq 5$).
+    \item $\mathcal{A}$ --- set of geographic areas / zones.
+    \item For a given technician $t \in \mathcal{T}$ on day $d \in \mathcal{D}$, the \emph{cluster} of feasible jobs is $\mathcal{C}_{t,d} \subseteq \mathcal{J}$ (Section~\ref{sec:clustering}).
+\end{itemize}
+
+% ===================================================================
+\section*{Constraints and Parameters}
+% ===================================================================
+
+\subsection*{Vehicle Types}
+\begin{itemize}
+    \item \textbf{V-2} --- required for Radiator Runs (special route type).
+    \item \textbf{V-4} --- weekly capacity switch (available / unavailable toggles capacity).
+    \item \textbf{V-5, V-6, V-7} --- standard service vehicles.
+\end{itemize}
+
+Each vehicle $v$ has a set of capability tags $\mathit{cap}_v$ and a daily availability vector.
+
+\subsection*{Technician Parameters}
+Each technician $t$ is characterised by:
+\begin{itemize}
+    \item Skill set $\mathit{skill}_t$.
+    \item Weekly availability after exceptions: $\mathcal{D}_t \subseteq \mathcal{D}$.
+    \item Home depot / start location $(y_t, x_t)$.
+\end{itemize}
+
+\subsection*{Job Parameters}
+Each job $j \in \mathcal{J}$ carries:
+\begin{itemize}
+    \item Address with geocoordinates $(\mathrm{lat}_j, \mathrm{lon}_j)$.
+    \item Area label $a_j \in \mathcal{A}$.
+    \item Required route type $\rho_j$ (normal, radiator, NH overnight, helper-needed).
+    \item Helper flag $h_j \in \{0,1\}$.
+    \item Age in days $\alpha_j$ (time since job was created).
+    \item Base revenue / value $w_j$.
+\end{itemize}
+
+\subsection*{Time and Distance}
+\begin{itemize}
+    \item Cluster radius: $R$ (meters) --- maximum Haversine distance from technician start to any job in the cluster.
+    \item Maximum inter-stop distance: $r$ (meters) --- maximum distance between consecutive stops.
+    \item Average vehicle speed: $v$ (m/min).
+    \item Cost per meter driven: $c$ (\$/m).
+    \item Service duration per stop: $\tau$ (minutes).
+    \item Maximum daily route duration: $T_{\max}$ (minutes).
+    \item Maximum stops per route: $P$.
+\end{itemize}
+
+\subsection*{Seasonal Weights}
+Scoring weights vary by season:
+\[
+\text{score}_j \;=\; w_g \cdot \text{geo}_j \;+\; w_f \cdot \text{fair}_j \;+\; w_a \cdot \text{age}_j \;+\; w_r \cdot \text{readiness}_j
+\]
+where $(w_g, w_f, w_a, w_r)$ shift between a geography--dominant profile (Mar--Sep) and a fairness--dominant profile (Oct--Feb).
+
+\subsection*{Weekly Exceptions}
+Before route construction the engine applies weekly exceptions:
+\begin{itemize}
+    \item Technician unavailability days.
+    \item Vehicle unavailability.
+    \item Pre-scheduled long jobs and boiler installs that consume partial capacity.
+\end{itemize}
+These reduce effective weekly capacity before clustering begins.
+
+% ===================================================================
+\section*{Input Data}
+% ===================================================================
+
+\subsection*{Job Data}
+A structured export from ServiceM8 providing, for each candidate job:
+\begin{longtable}{ccccccc}
+\toprule
+\textbf{ID} & \textbf{Address} & \textbf{Lat} & \textbf{Lon} & \textbf{Area} & \textbf{Age (days)} & \textbf{Value (\$)} \\
+\midrule
+J-001 & 123 Main St, Concord & 42.4605 & $-$71.3489 & Area-1 & 14 & 250 \\
+J-002 & 456 Elm St, Nashua   & 42.7654 & $-$71.4676 & Area-2 & 7  & 180 \\
+\bottomrule
+\end{longtable}
+
+The engine pre-computes a distance matrix $d_{i,j}$ for every pair of jobs using map-based shortest-path distances (OSMnx / NetworkX), falling back to Haversine when no road path exists.
+
+\subsection*{Duplicate--Address Handling}
+Jobs sharing the same address are grouped for route-shape evaluation (to avoid inflating stop density) and flagged for review. They are never silently removed.
+
+% ===================================================================
+\section*{Planning Pipeline}
+% ===================================================================
+
+The weekly planning pipeline runs the following stages in order:
 
 \begin{enumerate}
-    \item The weekly candidate pool has already excluded canceled, urgent/manual, already scheduled, and already-in-workflow jobs.
-    \item Weekly exceptions for technicians, vehicles, long jobs, and installs are available as structured inputs.
-    \item A preprocessing stage generates feasible candidate route-day bundles.
-    \item Duplicate addresses are grouped during preprocessing so that route compactness is measured by unique stop groups rather than raw job count.
-    \item Special routes are given lexicographic priority over normal route filling.
-    \item Area Readiness is derived from selected routes and is not treated as a hard constraint in Version 1.
+    \item \textbf{Load \& Normalise} --- Import candidate pool, technician roster, vehicle roster, exceptions.
+    \item \textbf{Exclude} --- Remove jobs already scheduled, cancelled, urgent/manual, or in-workflow.
+    \item \textbf{Apply Weekly Exceptions} --- Compute true weekly capacity per technician--vehicle pair.
+    \item \textbf{Reserve Special Routes} --- Place Radiator Runs (require V-2), NH Overnight Runs, and helper-needed routes \emph{before} normal filling.
+    \item \textbf{Cluster (Section~\ref{sec:clustering})} --- Build geographic clusters per technician--day.
+    \item \textbf{Route (Section~\ref{sec:model})} --- Solve a VRP within each cluster.
+    \item \textbf{Select Standby Jobs} --- Choose plausible backup jobs per route.
+    \item \textbf{Compute Area Readiness} --- Derive area communication layer (\texttt{Good} / \texttt{Moderate} / \texttt{Lean}).
+    \item \textbf{Render Outputs} --- Route maps, flags, summaries, reason codes.
 \end{enumerate}
 
-\section*{4. Notation for Candidate-Route Generation}
+% ===================================================================
+\section*{Clustering Phase}
+\label{sec:clustering}
+% ===================================================================
 
-The optimization model assumes that the candidate-route set $R$ is generated in preprocessing. This section defines the notation used for that generation step.
+We adopt a \textbf{Cluster--first, Route--second} decomposition following the approach implemented in \texttt{route\_finder\_example.py}.
 
-\subsection*{4.1 Geographic primitives}
+\begin{algorithm}[H]
+\caption{Geographic Cluster Construction for Technician $t$, Day $d$}
+\begin{algorithmic}[1]
+\Require Start location $(y_t, x_t)$, candidate jobs $\mathcal{J}$, cluster radius $R$, min cluster size $N_{\min}$, radius increment $\Delta R$, max iterations $I_{\max}$
+\Ensure Cluster $\mathcal{C}_{t,d}$
+\State $R_{\text{cur}} \gets R$
+\For{$\text{iter} = 1$ \textbf{to} $I_{\max}$}
+    \State $\mathcal{C}_{t,d} \gets \emptyset$
+    \For{each $j \in \mathcal{J}$}
+        \If{$\text{haversine}(y_t, x_t, \mathrm{lat}_j, \mathrm{lon}_j) \leq R_{\text{cur}}$
+            \textbf{and} $\text{area}(j)$ compatible
+            \textbf{and} $\text{skill}_t \supseteq \text{req}(j)$
+            \textbf{and} vehicle compatible}
+            \State $\mathcal{C}_{t,d} \gets \mathcal{C}_{t,d} \cup \{j\}$
+        \EndIf
+    \EndFor
+    \If{$|\mathcal{C}_{t,d}| \geq N_{\min}$} \textbf{break}
+    \Else \hspace{1em} $R_{\text{cur}} \gets R_{\text{cur}} + \Delta R$
+    \EndIf
+\EndFor
+\State Build distance sub-matrix $d_{i,j}$ for $i,j \in \{0\} \cup \mathcal{C}_{t,d}$ using road network
+\end{algorithmic}
+\end{algorithm}
 
-Let $S$ be the set of unique stop groups obtained after duplicate-address consolidation. Each job $j \in J$ belongs to exactly one stop group $s(j) \in S$.
+Area boundaries act as guidance, not hard walls: neighbouring areas may be mixed when geography meaningfully improves route quality.
 
-For each stop group $s \in S$ and area $a \in A$, define:
+% ===================================================================
+\section*{Intra--Cluster Routing Model (MILP)}
+\label{sec:model}
+% ===================================================================
 
-\begin{center}
-\begin{tabular}{ll}
-\toprule
-Symbol & Meaning \\
-\midrule
-$\xi_s \in \mathbb{R}^2$ & geographic coordinate or embedded point for stop group $s$ \\
-$\operatorname{area}(s) \in A$ & primary business area label of stop group $s$ \\
-$d_{ss'} \ge 0$ & geographic distance between stop groups $s$ and $s'$ \\
-$\eta_{ss'} \in \{0,1\}$ & adjacency indicator, equal to $1$ if $s'$ is allowed as a geographic neighbor of $s$ \\
-\bottomrule
-\end{tabular}
-\end{center}
+For each cluster $\mathcal{C}_{t,d}$ we solve an Orienteering-style VRP as a Mixed-Integer Linear Program. Let $N = |\mathcal{C}_{t,d}|$ and index the depot (technician start) as node~$0$.
 
-The adjacency indicator $\eta_{ss'}$ is not required to respect area boundaries exactly. It may allow cross-area adjacency when the resulting route remains geographically coherent.
-
-\subsection*{4.2 Job-rule indicators}
-
-For each job $j \in J$, define the rule indicators:
-
-\begin{center}
-\begin{tabular}{ll}
-\toprule
-Symbol & Meaning \\
-\midrule
-$e_j \in \{0,1\}$ & weekly eligibility indicator after upstream filtering \\
-$m_j \in \{0,1\}$ & helper-required indicator \\
-$n_j \in \{0,1\}$ & overnight-route indicator \\
-$r_j \in \{0,1\}$ & radiator-route indicator \\
-$\phi_{jt} \in \{0,1\}$ & compatibility of job $j$ with route type $t$ \\
-\bottomrule
-\end{tabular}
-\end{center}
-
-These indicators encode business rules before optimization. For example, a job requiring a helper should only appear in route candidates whose crew pattern includes sufficient staffing.
-
-\subsection*{4.3 Candidate route as a generated object}
-
-Each candidate route $r \in R$ is a tuple
-
-\[
-r = (J_r, S_r, d(r), t(r), c(r), v(r)),
-\]
-
-where:
-
+\subsection*{Parameters}
 \begin{itemize}
-    \item $J_r \subseteq J$ is the set of jobs included in route candidate $r$;
-    \item $S_r = \{s(j) : j \in J_r\}$ is the set of associated stop groups;
-    \item $d(r) \in D$ is the assigned planning day of the candidate;
-    \item $t(r)$ is the route type label;
-    \item $c(r)$ is the set of feasible crew patterns for the candidate;
-    \item $v(r)$ is the set of feasible vehicles for the candidate.
+\item $N$ nodes (job locations in the cluster) forming set $W = \{1,\dots,N\}$.
+\item Depot node $0$ with distances $d_{0,i}$, $d_{i,0}$ for $i \in W$.
+\item Road--network distances $d_{i,j}$ between jobs.
+\item Cluster radius $R$ and inter-stop radius $r$ (meters).
+\item Speed $v$ (m/min), cost per metre $c$ (\$/m).
+\item Service time per stop $\tau$ (minutes).
+\item Job score $w_j$ (revenue adjusted by seasonal weights).
+\item Maximum route duration $T_{\max}$ (minutes).
+\item Maximum number of stops $P$.
 \end{itemize}
 
-The route candidate set $R$ is therefore not arbitrary. It is the output of a rule-based generation map
-
-\[
-\Gamma : (J,S,A,\text{policy},\text{exceptions}) \mapsto R.
-\]
-
-\subsection*{4.4 Feasibility conditions for candidate generation}
-
-A subset of jobs $J_r$ may be turned into a candidate route only if the following conditions hold during preprocessing:
-
-\begin{align*}
-& e_j = 1, && \forall j \in J_r, \\
-& \eta_{s(j)s(j')} = 1 \text{ or } d_{s(j)s(j')} \le \bar{d}_{\text{geo}}, && \forall j,j' \in J_r, \\
-& \phi_{j,t(r)} = 1, && \forall j \in J_r, \\
-& \exists c \in C,\; v \in V \text{ such that the route type and staffing rules are satisfied.}
-\end{align*}
-
-Here $\bar{d}_{\text{geo}}$ is a configurable geographic coherence threshold. It controls how far apart stops may be before they should no longer belong to the same candidate route.
-
-\subsection*{4.5 Geography score construction}
-
-The geography quality score $g_r$ used later in the optimization may be computed from the route candidate geometry. One generic form is
-
-\[
-g_r = w_1 \cdot \operatorname{compact}(S_r) + w_2 \cdot \operatorname{adjacent}(S_r) - w_3 \cdot \operatorname{spread}(S_r) - w_4 \cdot \operatorname{cross}(S_r),
-\]
-
-where:
-
+\subsection*{Decision Variables}
 \begin{itemize}
-    \item $\operatorname{compact}(S_r)$ rewards dense and localized stop patterns;
-    \item $\operatorname{adjacent}(S_r)$ rewards movement through neighboring stop groups;
-    \item $\operatorname{spread}(S_r)$ penalizes large geographic dispersion;
-    \item $\operatorname{cross}(S_r)$ penalizes unnecessary cross-area mixing.
+    \item $x_{i,j} \in \{0,1\}$: 1 if the route traverses arc $(i,j)$, $0 \leq i,j \leq N$.
+    \item $u_i \in \{0,1,\dots,P\}$: visit order (Miller--Tucker--Zemlin), $0 \leq i \leq N$.
 \end{itemize}
 
-The term $\operatorname{cross}(S_r)$ should be treated as a soft penalty, not a hard prohibition, because the brief states that area boundaries are guidance rather than hard walls.
+\subsection*{Objective Function}
 
-\subsection*{4.6 Relationship to the optimization model}
-
-After preprocessing, the generated route set $R$ is treated as fixed input to the optimization problem. The tensors in the optimization model are induced by the candidate routes:
-
+Maximize the total weighted score minus travel cost for the route $\Omega$:
 \[
-a_{jr} = \mathbf{1}\{j \in J_r\}, \qquad
-\delta_{rd} = \mathbf{1}\{d(r)=d\}, \qquad
-f_{rcv} = \mathbf{1}\{c \in c(r),\; v \in v(r)\}.
+\max \;\; \sum_{i=0}^{N}\sum_{\substack{j=0\\j\neq i}}^{N} w_{j}\, x_{i,j} \;-\; \sum_{i=0}^{N}\sum_{\substack{j=0\\j\neq i}}^{N} c \cdot d_{i,j} \cdot x_{i,j}
 \]
 
-This separation is important. Geography and business rules are used first to construct a tractable set of meaningful route candidates. The optimization model then selects the best weekly combination among those candidates.
+\subsection*{Subject to:}
 
-\section*{5. Sets and Indices}
+\begin{align}
+& \sum_{i=1}^{N} \sum_{\substack{j=1\\j\neq i}}^{N} x_{i,j} \leq P
+    && \text{(Max stops per route)} \label{eq:maxstops}\\[4pt]
+& \sum_{i=0}^{N}\sum_{\substack{j=0\\j\neq i}}^{N} x_{i,j}\!\left(\frac{d_{i,j}}{v} + \tau_{j}\right) \leq T_{\max}
+    && \text{(Daily time budget)} \label{eq:time}\\[4pt]
+& d_{0,i} \leq R,\;\; d_{i,0} \leq R, \quad i \in W
+    && \text{(Cluster radius from depot)} \label{eq:cluster}\\[4pt]
+& x_{i,i} = 0, \quad i=0,\dots,N
+    && \text{(No self-loops)} \label{eq:noloop}\\[4pt]
+& \sum_{i=0}^{N} x_{i,j} \leq 1, \quad j=0,\dots,N
+    && \text{(Enter each node at most once)} \label{eq:inonce}\\[4pt]
+& \sum_{j=0}^{N} x_{i,j} \leq 1, \quad i=0,\dots,N
+    && \text{(Leave each node at most once)} \label{eq:outonce}\\[4pt]
+& \sum_{j=1}^{N} x_{0,j} = 1
+    && \text{(Depart from depot)} \label{eq:depart}\\[4pt]
+& \sum_{i=1}^{N} x_{i,0} = 1
+    && \text{(Return to depot)} \label{eq:return}\\[4pt]
+& u_i - u_j + P\, x_{i,j} \leq P - 1,\; 1 \leq i,j \leq N
+    && \text{(MTZ subtour elimination)} \label{eq:mtz}\\[4pt]
+& \sum_{j=0}^{N} x_{i,j} = \sum_{k=0}^{N} x_{k,i}, \quad i=0,\dots,N
+    && \text{(Flow conservation)} \label{eq:flow}\\[4pt]
+& d_{i,j} \leq r \;\;\text{or}\;\; x_{i,j}=0, \quad 1\leq i,j \leq N
+    && \text{(Inter-stop distance limit)} \label{eq:interstop}
+\end{align}
 
-\begin{center}
-\begin{tabular}{ll}
-\toprule
-Symbol & Meaning \\
-\midrule
-$J$ & set of candidate jobs for the week \\
-$J^{sp} \subseteq J$ & set of jobs requiring special-route handling \\
-$R$ & set of feasible candidate route-day proposals \\
-$R^{sp} \subseteq R$ & set of special-route candidates \\
-$R^{reg} = R \setminus R^{sp}$ & set of regular route candidates \\
-$C$ & set of feasible crew patterns \\
-$V$ & set of vehicles \\
-$D$ & set of planning days in the week \\
-$A$ & set of business areas \\
-\bottomrule
-\end{tabular}
-\end{center}
+Constraints \eqref{eq:cluster} and \eqref{eq:interstop} are pre-processing filters: arcs violating them are removed from the feasible arc set before the solver runs, reducing the problem dimension (as done in the optimised MILP implementation).
 
-The set $C$ may contain both one-technician crews and helper-required crew patterns. This lets the model represent two-man work without introducing stop-level sequencing.
+% ===================================================================
+\section*{Hard Constraints (Eligibility Layer)}
+% ===================================================================
 
-\section*{6. Parameters}
-
-\begin{center}
-\begin{tabular}{ll}
-\toprule
-Symbol & Meaning \\
-\midrule
-$a_{jr} \in \{0,1\}$ & equals $1$ if job $j$ is included in route candidate $r$ \\
-$\delta_{rd} \in \{0,1\}$ & equals $1$ if route candidate $r$ is planned for day $d$ \\
-$f_{rcv} \in \{0,1\}$ & equals $1$ if route $r$ is feasible with crew $c$ and vehicle $v$ \\
-$p_j \ge 0$ & base business priority of job $j$ \\
-$u_j \ge 0$ & standby usefulness score of job $j$ \\
-$g_r \ge 0$ & geography quality score of route $r$ \\
-$h_j \ge 0$ & fairness or aging pressure for job $j$ \\
-$\ell_{ar} \ge 0$ & readiness contribution of route $r$ to area $a$ \\
-$H_{cd} \in \mathbb{Z}_{+}$ & available route slots for crew $c$ on day $d$ \\
-$Q_{vd} \in \mathbb{Z}_{+}$ & available route slots for vehicle $v$ on day $d$ \\
-$b_j \in \{0,1\}$ & equals $1$ if job $j$ is eligible for standby output \\
-$\kappa_j \ge 0$ & special-route priority weight for job $j \in J^{sp}$ \\
-$\alpha_s, \beta_s, \gamma_s, \mu_s \ge 0$ & seasonal objective weights for season $s$ \\
-$\theta_a^M, \theta_a^G \ge 0$ & readiness thresholds for area $a$ \\
-\bottomrule
-\end{tabular}
-\end{center}
-
-The seasonal weights allow the planner to shift emphasis across the year:
+Before the MILP is invoked, jobs and assignments are filtered by hard constraints:
 
 \begin{itemize}
-    \item in the warm season, geography receives more weight;
-    \item in the cold season, fairness and aging receive more weight.
+    \item Job must be in the valid weekly candidate pool.
+    \item Technician must be available on the planned day (after weekly exceptions).
+    \item Vehicle must be available and capability-compatible with the route type.
+    \item Special route prerequisites must be satisfied (e.g.\ V-2 for Radiator Runs).
+    \item Helper-needed jobs require adequate staffing.
+    \item Prohibited technician--job pairings are excluded.
 \end{itemize}
 
-\section*{7. Decision Variables}
+Each exclusion is annotated with a reason code for traceability.
 
-\begin{align*}
-x_{rcv} &\in \{0,1\} && \text{equals $1$ if route candidate $r$ is selected with crew $c$ and vehicle $v$} \\
-y_j &\in \{0,1\} && \text{equals $1$ if job $j$ is scheduled this week} \\
-z_j &\in \{0,1\} && \text{equals $1$ if job $j$ is placed in the standby pool} \\
-\rho_a &\ge 0 && \text{readiness score for area $a$}
-\end{align*}
+% ===================================================================
+\section*{Special Route Types}
+% ===================================================================
 
-\section*{8. Core Feasibility Constraints}
-
-\subsection*{8.1 Route assignment feasibility}
-
-Only crew-vehicle combinations declared feasible by preprocessing may be selected:
-
-\[
-x_{rcv} \le f_{rcv}, \qquad \forall r \in R,\; c \in C,\; v \in V.
-\]
-
-\subsection*{8.2 Job uniqueness}
-
-Each job may appear in at most one selected route:
-
-\[
-\sum_{r \in R} \sum_{c \in C} \sum_{v \in V} a_{jr} x_{rcv} \le 1, \qquad \forall j \in J.
-\]
-
-We link the route decisions to the weekly scheduled-job variable:
-
-\[
-y_j = \sum_{r \in R} \sum_{c \in C} \sum_{v \in V} a_{jr} x_{rcv}, \qquad \forall j \in J.
-\]
-
-\subsection*{8.3 Crew capacity by day}
-
-Each crew pattern has limited weekly availability, after weekly exceptions have been applied:
-
-\[
-\sum_{r \in R} \sum_{v \in V} \delta_{rd} x_{rcv} \le H_{cd}, \qquad \forall c \in C,\; d \in D.
-\]
-
-\subsection*{8.4 Vehicle capacity by day}
-
-Each vehicle has limited availability by day:
-
-\[
-\sum_{r \in R} \sum_{c \in C} \delta_{rd} x_{rcv} \le Q_{vd}, \qquad \forall v \in V,\; d \in D.
-\]
-
-\subsection*{8.5 Standby eligibility}
-
-A standby job cannot also be scheduled:
-
-\[
-z_j \le 1 - y_j, \qquad \forall j \in J.
-\]
-
-Only jobs marked as standby-eligible may appear in the standby pool:
-
-\[
-z_j \le b_j, \qquad \forall j \in J.
-\]
-
-\section*{9. Lexicographic Optimization Structure}
-
-The brief says that special route types should be handled before normal route filling. A natural mathematical representation is a \emph{lexicographic} or \emph{two-stage} optimization.
-
-\subsection*{Stage I: prioritize special-route work}
-
-First solve:
-
-\[
-\max \; Z_1 = \sum_{j \in J^{sp}} \kappa_j y_j
-\]
-
-subject to the core feasibility constraints above.
-
-Let $Z_1^{\star}$ denote the optimal value.
-
-\subsection*{Stage II: optimize the weekly draft plan}
-
-Then solve the secondary problem:
-
-\[
-\max \; Z_2 =
-\alpha_s \sum_{j \in J} p_j y_j
-+ \beta_s \sum_{r \in R} \sum_{c \in C} \sum_{v \in V} g_r x_{rcv}
-+ \gamma_s \sum_{j \in J} h_j y_j
-+ \mu_s \sum_{j \in J} u_j z_j
-\]
-
-subject to:
-
-\begin{align*}
-& \sum_{j \in J^{sp}} \kappa_j y_j = Z_1^{\star}, \\
-& \text{all core feasibility constraints.}
-\end{align*}
-
-This means that special-route work is optimized first, and then the normal weekly tradeoff between job value, geographic quality, fairness pressure, and standby quality is optimized without sacrificing the best achievable special-route coverage.
-
-\section*{10. Interpretation of the Objective}
-
-The secondary objective has four terms:
+Special routes are planned \emph{before} normal route filling to reserve capacity:
 
 \begin{enumerate}
-    \item $\sum_{j \in J} p_j y_j$: rewards scheduling high-value jobs.
-    \item $\sum_{r,c,v} g_r x_{rcv}$: rewards geographically coherent routes.
-    \item $\sum_{j \in J} h_j y_j$: rewards fairness and aging pressure.
-    \item $\sum_{j \in J} u_j z_j$: rewards standby jobs that are useful substitutes if a scheduled job drops out.
+    \item \textbf{Radiator Runs} --- Require vehicle V-2. Clustered separately.
+    \item \textbf{NH Overnight Runs} --- Long-distance routes requiring overnight stay.
+    \item \textbf{Two-Man / Helper Routes} --- Jobs flagged with $h_j = 1$; need two technicians or a helper.
 \end{enumerate}
 
-The seasonal coefficient vector $(\alpha_s, \beta_s, \gamma_s, \mu_s)$ changes by season. For example:
+After special routes consume capacity, the remaining capacity feeds normal route construction.
 
-\begin{itemize}
-    \item in March through September, choose $\beta_s$ relatively large so geography dominates;
-    \item in October through February, increase $\gamma_s$ so fairness and aging carry more influence.
-\end{itemize}
+% ===================================================================
+\section*{Solution Methods}
+% ===================================================================
 
-\section*{11. Area Readiness Output}
+For each cluster the engine can apply one or more of the following, matching the algorithms in the codebase:
 
-Area Readiness is not treated as a hard constraint in Version 1. Instead, it is computed from the selected routes:
+\begin{enumerate}
+    \item \textbf{MILP} (CBC solver via Pyomo) --- exact solution for small--to--medium clusters.
+    \item \textbf{Simulated Annealing} --- metaheuristic for larger clusters; supports street-filling variant.
+    \item \textbf{Greedy Heuristic} --- fast constructive heuristic with revenue-to-distance scoring.
+    \item \textbf{Brute-Force Search} --- exhaustive enumeration for very small instances.
+\end{enumerate}
+
+A time budget of 120~seconds is enforced across all methods.
+
+% ===================================================================
+\section*{Standby Job Selection}
+% ===================================================================
+
+After route construction, unassigned but feasible jobs are ranked as standby replacements for each route. Standby jobs are output separately from assigned jobs so they can be deployed if a scheduled job drops out.
+
+% ===================================================================
+\section*{Area Readiness}
+% ===================================================================
+
+The engine computes an area--readiness indicator for each geographic area $a \in \mathcal{A}$:
 
 \[
-\rho_a = \sum_{r \in R} \sum_{c \in C} \sum_{v \in V} \ell_{ar} x_{rcv}, \qquad \forall a \in A.
+\text{Readiness}(a) \in \{\texttt{Good},\;\texttt{Moderate},\;\texttt{Lean}\}
 \]
 
-The plain-language readiness label for each area is then derived post-optimization:
+based on the density and quality of planned activity in that area. This is a communication layer for customer--facing scheduling messages and does not drive route construction.
 
-\[
-\text{Readiness}(a) =
-\begin{cases}
-\text{Good}, & \rho_a \ge \theta_a^G, \\
-\text{Moderate}, & \theta_a^M \le \rho_a < \theta_a^G, \\
-\text{Lean}, & \rho_a < \theta_a^M.
-\end{cases}
-\]
+% ===================================================================
+\section*{Post-Route Update Rule}
+% ===================================================================
 
-This is consistent with the brief: Area Readiness remains a communication layer that should stay credible relative to actual run behavior.
+After a weekly plan is finalised and approved, assigned jobs $j$ with $\sum_{i} x_{i,j} = 1$ are removed from the candidate pool for subsequent planning iterations.
 
-\section*{12. Notes on Preprocessing}
+% ===================================================================
+\section*{Output Artefacts}
+% ===================================================================
 
-Several business requirements are most naturally enforced before optimization:
-
+Each weekly run produces:
 \begin{itemize}
-    \item candidate pool eligibility;
-    \item duplicate-address grouping;
-    \item route-day candidate generation;
-    \item route-type tagging;
-    \item crew and vehicle feasibility screening.
+    \item Proposed route/day assignments per technician.
+    \item Standby job list per route.
+    \item Plotted map for each route/day.
+    \item Area readiness values and plain-text lookup block.
+    \item Review flags: duplicate-address groups, vehicle bottlenecks, cross-area blends, weak standby pools.
+    \item Reason codes traceable to the rules that produced each decision.
 \end{itemize}
 
-Mathematically, those steps determine the data tensors $a_{jr}$, $\delta_{rd}$, $f_{rcv}$, and $\ell_{ar}$.
+Outputs are designed for human review by a non-technical owner; the engine does \emph{not} auto-book jobs.
 
-In particular, the statement ``area boundaries are guidance, not hard walls'' is implemented by allowing cross-area candidate routes during preprocessing whenever their geography score remains strong.
-
-\section*{13. Why This Formulation Fits Version 1}
-
-This formulation is appropriate for Version 1 because it is:
+% ===================================================================
+\section*{Future Considerations}
+% ===================================================================
 
 \begin{itemize}
-    \item route-first rather than appointment-first;
-    \item explainable to a non-technical owner;
-    \item consistent with human review;
-    \item compatible with Airtable-managed policy inputs;
-    \item lighter than exact tour optimization;
-    \item able to encode special-route precedence and seasonal fairness tradeoffs.
+    \item Exact stop sequencing and appointment--time optimization (Version~2).
+    \item Integration with real-time traffic and drive-time APIs.
+    \item Historical job-success and no-show rates to refine scoring weights.
+    \item Multi-week rolling horizon planning.
+    \item Machine-learning--assisted demand forecasting for proactive area readiness.
 \end{itemize}
 
-The model is also a practical bridge to implementation in Pyomo. The binary variables $x_{rcv}$, $y_j$, and $z_j$ lead directly to a mixed-integer linear programming model once the candidate route set has been generated.
+\section*{ SW solution considerations}
 
-\section*{14. Explicitly Out of Scope}
+The reading of the input (data.txt):  
+\begin{itemize}
+\item 
+Parses the data file (handling the comma-decimal format in numbers).
+\item Converts latitude and longitude to float.
+\item  Uses the Google Maps Distance Matrix API or OSMnx's package to compute the matrix \(d_{i,j}\) of real-world driving distances between all pairs of locations.
+\end{itemize}
 
-The following elements are intentionally excluded from the Version 1 optimization model:
+Get the starting location and calculate the checkpoints inside the corresponding clusters.
+
+For each of the transport type (for now it is Foot and Car) calculate distances (meters) as time(minutes) between checkpoints and between starting locations and checkpoints.
+
+Approaches to find the best routes:
+\begin{itemize}
+    \item Use dynamic programming approach (Bellman-Ford type) to find the max revenue trip
+    \item Use brute-force with branch-and-bound for every possible set (using some heuristics)
+    \item Solve MILP Optimization problem mentioned
+    \item Use Simulated Annealing approach
+    \item Heuristics
+\end{itemize}
+
+The resulting solution route is displayed on the map.
+
+\section*{Finding the best route}
+
+\subsection*{MILP Optimization problem}
+
+We can directly solve the described optimization problem using packages like Pyomo with open solvers (for example, CBC or GLPK).
+
+The overall worst-case number of variables is \(N*N + N = N(N+1)\), where \(N\) is within \(100-3300\), so the order of the number of variables is \(100000 =10^5\), looks like it is too large even for commercial solvers.
+
+However, we may note that we don't have to use the whole set of checkpoints, but only those that are situated within the maximum zone distance radius. For file data.txt, we have that each such zone gives only at max 100 checkpoints. Therefore, we have an order of $10^3$ of variables that is realistic to solve with open solvers.
+
+\subsection*{Heuristics}
+
+The possible approach for heuristic is the following: from the starting location we list the points within accessing radius, and sort them by the value of revenue of the point minus the cost of the way to it. We select the maximal value for this sorting and choose is as the first nexus (route). 
+
+After this, we start from this selected point and select new route with the same sorting, always considering that new checkpoint must be inside accessing radius for the start and the current point.
+
+We continue until we either have \(P\) checkpoints selected or we cannot find the point where time for the whole route is less than \(T_{max}\).
+
+
+\subsection*{Brute-force branch-and-bound}
+
+We implement the BFS approach: 
+
+For the starting point we calculate for all accessible checkpoints the price of it as the value of revenue of the point minus the cost of the way to it, as well as the time to reach this points. These points are put in the queue. Then, as in BFS we took those points from the queue and calculate again the corresponding neighbors (that are not already in the routes) and store them in the queue. 
+
+We proceed with this procedure until we either get P length route or the total time constraint cannot be satisfied.  
+
+Also, we use branch and bound approach. As far as we get heuristics solution and starting minima value we reject options where the revenue be certainly less than already calculated.
+
+The overall complexity/memory of this approach is \(O(N^P)\),where \(N\) is the number of nodes in accessible zone, i.e. we have \(100^{14}=10^{28}\).
+
+\subsection*{Simulated annealing}
+
+
+Simulated Annealing (SA) is a metaheuristic inspired by the annealing process in metallurgy. It is suitable for combinatorial optimization problems such as our inspection routing task, where the objective is to select and order at most $P$ nodes to maximize revenue while satisfying time, distance, and capacity constraints.
+
+\subsubsection*{Key Concepts}
 
 \begin{itemize}
-    \item exact stop sequencing within a route;
-    \item appointment-time assignment;
-    \item direct ServiceM8 calendar writes;
-    \item speculative machine learning components;
-    \item fully global stop-level vehicle routing across the whole week.
+    \item \textbf{State:} A feasible inspection route starting and ending at node $0$, visiting a subset of nodes $\Omega \subseteq \{1, \ldots, N\}$.
+    \item \textbf{Objective Function:}
+    \[
+    \max\left( \sum_{i=0}^{N}\sum_{j=0}^{N} w_{i} x_{i,j} - \sum_{i=0}^{N}\sum_{j=0}^{N} c \cdot d_{i,j} \cdot x_{i,j} \right)
+    \]
+    \item \textbf{Constraints:} Each candidate route must satisfy the inspection count limit $|\Omega| \leq P$, total time limit $T_{\text{max}}$, and local and global distance constraints.
+    \item \textbf{Temperature:} Controls the acceptance of worse solutions to escape local minima.
+    \item \textbf{Cooling schedule:} Determines how temperature decreases over time.
 \end{itemize}
 
-\section*{15. Next Modeling Step}
+\subsubsection*{Neighborhood Operations}
 
-The next step is to convert this mathematical formulation into a Pyomo implementation with:
+To explore the solution space, we define several perturbation operators:
 
 \begin{itemize}
-    \item explicit input schemas for jobs, crews, vehicles, exceptions, and route candidates;
-    \item reproducible candidate-route generation rules;
-    \item calibrated seasonal weights;
-    \item test fixtures for special routes, duplicate addresses, standby selection, and area readiness.
+    \item \textbf{Node Insertion:} Randomly insert a new node $j \notin \Omega$ into the current route at a random position, if it satisfies constraints.
+    \item \textbf{Node Deletion:} Randomly remove a node $j \in \Omega$, except the start node.
+    \item \textbf{Node Swap:} Swap two nodes $i, j \in \Omega$, modifying the order of visits.
+    \item \textbf{External Swap:} Replace a node $i \in \Omega$ with another node $j \notin \Omega$.
+    \item \textbf{2-opt Flip:} Reverse a subsegment of the route to reduce total distance.
 \end{itemize}
+
+\subsubsection*{Simulated Annealing Algorithm}
+
+\begin{algorithm}[H]
+\caption{Simulated Annealing for Inspection Routing}
+\begin{algorithmic}[1]
+\State Initialize route $\Omega_0$ with feasible nodes
+\State $T \gets T_{\text{start}},\ T_{\text{end}} \gets$ final temperature
+\While{$T > T_{\text{end}}$}
+    \For{$k = 1$ to $K$ (inner loop)}
+        \State $r_{\text{new}} \gets$ apply a random neighbor operation to $\Omega$
+        \If{$r_{\text{new}}$ is feasible}
+            \State $\Delta \gets \text{Objective}(r_{\text{new}}) - \text{Objective}(\Omega)$
+            \If{$\Delta > 0$}
+                \State Accept new route
+            \ElsIf{$\exp\left(\frac{\Delta}{T}\right) > \text{random}(0,1)$}
+                \State Accept new route with probability
+            \EndIf
+        \EndIf
+    \EndFor
+    \State $T \gets \alpha T$ \Comment{Cooling: $\alpha \in (0,1)$}
+\EndWhile
+\end{algorithmic}
+\end{algorithm}
+
+\subsubsection*{Feasibility Check}
+
+Every new route $\Omega'$ generated during neighborhood exploration is accepted only if:
+\begin{itemize}
+    \item The number of nodes visited does not exceed $P$.
+    \item The total travel and inspection time is within $T_{\text{max}}$:
+    \[
+    \sum_{(i,j) \in \Omega'} t_{ij} + \tau_j \leq T_{\text{max}}
+    \]
+    \item The distances $d_{ij} \leq D_{\max}$ for entering and exiting zones.
+    \item The step distances $d_{ij} \leq D'_{\max}$ between consecutive visits.
+\end{itemize}
+
+\subsubsection*{Advantages}
+
+Simulated Annealing avoids local optima by probabilistically accepting worse solutions during early stages. With well-chosen operators and cooling schedules, SA efficiently explores complex route spaces.
+
+\subsubsection*{Implementation Notes}
+
+\begin{itemize}
+    \item The initial solution can be constructed greedily by selecting the $P$ nodes with highest $(w_i - c \cdot d_{0i})$ ratios.
+    \item Use a priority queue or randomized selection for neighbor generation.
+    \item Recompute route cost incrementally where possible to improve efficiency.
+\end{itemize}
+
+
+
+
+
+
 
 \end{document}
