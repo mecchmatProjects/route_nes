@@ -56,7 +56,121 @@ The draft formulation uses the following assumptions:
     \item Area Readiness is derived from selected routes and is not treated as a hard constraint in Version 1.
 \end{enumerate}
 
-\section*{4. Sets and Indices}
+\section*{4. Notation for Candidate-Route Generation}
+
+The optimization model assumes that the candidate-route set $R$ is generated in preprocessing. This section defines the notation used for that generation step.
+
+\subsection*{4.1 Geographic primitives}
+
+Let $S$ be the set of unique stop groups obtained after duplicate-address consolidation. Each job $j \in J$ belongs to exactly one stop group $s(j) \in S$.
+
+For each stop group $s \in S$ and area $a \in A$, define:
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Symbol & Meaning \\
+\midrule
+$\xi_s \in \mathbb{R}^2$ & geographic coordinate or embedded point for stop group $s$ \\
+$\operatorname{area}(s) \in A$ & primary business area label of stop group $s$ \\
+$d_{ss'} \ge 0$ & geographic distance between stop groups $s$ and $s'$ \\
+$\eta_{ss'} \in \{0,1\}$ & adjacency indicator, equal to $1$ if $s'$ is allowed as a geographic neighbor of $s$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The adjacency indicator $\eta_{ss'}$ is not required to respect area boundaries exactly. It may allow cross-area adjacency when the resulting route remains geographically coherent.
+
+\subsection*{4.2 Job-rule indicators}
+
+For each job $j \in J$, define the rule indicators:
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Symbol & Meaning \\
+\midrule
+$e_j \in \{0,1\}$ & weekly eligibility indicator after upstream filtering \\
+$m_j \in \{0,1\}$ & helper-required indicator \\
+$n_j \in \{0,1\}$ & overnight-route indicator \\
+$r_j \in \{0,1\}$ & radiator-route indicator \\
+$\phi_{jt} \in \{0,1\}$ & compatibility of job $j$ with route type $t$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+These indicators encode business rules before optimization. For example, a job requiring a helper should only appear in route candidates whose crew pattern includes sufficient staffing.
+
+\subsection*{4.3 Candidate route as a generated object}
+
+Each candidate route $r \in R$ is a tuple
+
+\[
+r = (J_r, S_r, d(r), t(r), c(r), v(r)),
+\]
+
+where:
+
+\begin{itemize}
+    \item $J_r \subseteq J$ is the set of jobs included in route candidate $r$;
+    \item $S_r = \{s(j) : j \in J_r\}$ is the set of associated stop groups;
+    \item $d(r) \in D$ is the assigned planning day of the candidate;
+    \item $t(r)$ is the route type label;
+    \item $c(r)$ is the set of feasible crew patterns for the candidate;
+    \item $v(r)$ is the set of feasible vehicles for the candidate.
+\end{itemize}
+
+The route candidate set $R$ is therefore not arbitrary. It is the output of a rule-based generation map
+
+\[
+\Gamma : (J,S,A,\text{policy},\text{exceptions}) \mapsto R.
+\]
+
+\subsection*{4.4 Feasibility conditions for candidate generation}
+
+A subset of jobs $J_r$ may be turned into a candidate route only if the following conditions hold during preprocessing:
+
+\begin{align*}
+& e_j = 1, && \forall j \in J_r, \\
+& \eta_{s(j)s(j')} = 1 \text{ or } d_{s(j)s(j')} \le \bar{d}_{\text{geo}}, && \forall j,j' \in J_r, \\
+& \phi_{j,t(r)} = 1, && \forall j \in J_r, \\
+& \exists c \in C,\; v \in V \text{ such that the route type and staffing rules are satisfied.}
+\end{align*}
+
+Here $\bar{d}_{\text{geo}}$ is a configurable geographic coherence threshold. It controls how far apart stops may be before they should no longer belong to the same candidate route.
+
+\subsection*{4.5 Geography score construction}
+
+The geography quality score $g_r$ used later in the optimization may be computed from the route candidate geometry. One generic form is
+
+\[
+g_r = w_1 \cdot \operatorname{compact}(S_r) + w_2 \cdot \operatorname{adjacent}(S_r) - w_3 \cdot \operatorname{spread}(S_r) - w_4 \cdot \operatorname{cross}(S_r),
+\]
+
+where:
+
+\begin{itemize}
+    \item $\operatorname{compact}(S_r)$ rewards dense and localized stop patterns;
+    \item $\operatorname{adjacent}(S_r)$ rewards movement through neighboring stop groups;
+    \item $\operatorname{spread}(S_r)$ penalizes large geographic dispersion;
+    \item $\operatorname{cross}(S_r)$ penalizes unnecessary cross-area mixing.
+\end{itemize}
+
+The term $\operatorname{cross}(S_r)$ should be treated as a soft penalty, not a hard prohibition, because the brief states that area boundaries are guidance rather than hard walls.
+
+\subsection*{4.6 Relationship to the optimization model}
+
+After preprocessing, the generated route set $R$ is treated as fixed input to the optimization problem. The tensors in the optimization model are induced by the candidate routes:
+
+\[
+a_{jr} = \mathbf{1}\{j \in J_r\}, \qquad
+\delta_{rd} = \mathbf{1}\{d(r)=d\}, \qquad
+f_{rcv} = \mathbf{1}\{c \in c(r),\; v \in v(r)\}.
+\]
+
+This separation is important. Geography and business rules are used first to construct a tractable set of meaningful route candidates. The optimization model then selects the best weekly combination among those candidates.
+
+\section*{5. Sets and Indices}
 
 \begin{center}
 \begin{tabular}{ll}
@@ -78,7 +192,7 @@ $A$ & set of business areas \\
 
 The set $C$ may contain both one-technician crews and helper-required crew patterns. This lets the model represent two-man work without introducing stop-level sequencing.
 
-\section*{5. Parameters}
+\section*{6. Parameters}
 
 \begin{center}
 \begin{tabular}{ll}
@@ -110,7 +224,7 @@ The seasonal weights allow the planner to shift emphasis across the year:
     \item in the cold season, fairness and aging receive more weight.
 \end{itemize}
 
-\section*{6. Decision Variables}
+\section*{7. Decision Variables}
 
 \begin{align*}
 x_{rcv} &\in \{0,1\} && \text{equals $1$ if route candidate $r$ is selected with crew $c$ and vehicle $v$} \\
@@ -119,9 +233,9 @@ z_j &\in \{0,1\} && \text{equals $1$ if job $j$ is placed in the standby pool} \
 \rho_a &\ge 0 && \text{readiness score for area $a$}
 \end{align*}
 
-\section*{7. Core Feasibility Constraints}
+\section*{8. Core Feasibility Constraints}
 
-\subsection*{7.1 Route assignment feasibility}
+\subsection*{8.1 Route assignment feasibility}
 
 Only crew-vehicle combinations declared feasible by preprocessing may be selected:
 
@@ -129,7 +243,7 @@ Only crew-vehicle combinations declared feasible by preprocessing may be selecte
 x_{rcv} \le f_{rcv}, \qquad \forall r \in R,\; c \in C,\; v \in V.
 \]
 
-\subsection*{7.2 Job uniqueness}
+\subsection*{8.2 Job uniqueness}
 
 Each job may appear in at most one selected route:
 
@@ -143,7 +257,7 @@ We link the route decisions to the weekly scheduled-job variable:
 y_j = \sum_{r \in R} \sum_{c \in C} \sum_{v \in V} a_{jr} x_{rcv}, \qquad \forall j \in J.
 \]
 
-\subsection*{7.3 Crew capacity by day}
+\subsection*{8.3 Crew capacity by day}
 
 Each crew pattern has limited weekly availability, after weekly exceptions have been applied:
 
@@ -151,7 +265,7 @@ Each crew pattern has limited weekly availability, after weekly exceptions have 
 \sum_{r \in R} \sum_{v \in V} \delta_{rd} x_{rcv} \le H_{cd}, \qquad \forall c \in C,\; d \in D.
 \]
 
-\subsection*{7.4 Vehicle capacity by day}
+\subsection*{8.4 Vehicle capacity by day}
 
 Each vehicle has limited availability by day:
 
@@ -159,7 +273,7 @@ Each vehicle has limited availability by day:
 \sum_{r \in R} \sum_{c \in C} \delta_{rd} x_{rcv} \le Q_{vd}, \qquad \forall v \in V,\; d \in D.
 \]
 
-\subsection*{7.5 Standby eligibility}
+\subsection*{8.5 Standby eligibility}
 
 A standby job cannot also be scheduled:
 
@@ -173,7 +287,7 @@ Only jobs marked as standby-eligible may appear in the standby pool:
 z_j \le b_j, \qquad \forall j \in J.
 \]
 
-\section*{8. Lexicographic Optimization Structure}
+\section*{9. Lexicographic Optimization Structure}
 
 The brief says that special route types should be handled before normal route filling. A natural mathematical representation is a \emph{lexicographic} or \emph{two-stage} optimization.
 
@@ -210,7 +324,7 @@ subject to:
 
 This means that special-route work is optimized first, and then the normal weekly tradeoff between job value, geographic quality, fairness pressure, and standby quality is optimized without sacrificing the best achievable special-route coverage.
 
-\section*{9. Interpretation of the Objective}
+\section*{10. Interpretation of the Objective}
 
 The secondary objective has four terms:
 
@@ -228,7 +342,7 @@ The seasonal coefficient vector $(\alpha_s, \beta_s, \gamma_s, \mu_s)$ changes b
     \item in October through February, increase $\gamma_s$ so fairness and aging carry more influence.
 \end{itemize}
 
-\section*{10. Area Readiness Output}
+\section*{11. Area Readiness Output}
 
 Area Readiness is not treated as a hard constraint in Version 1. Instead, it is computed from the selected routes:
 
@@ -249,7 +363,7 @@ The plain-language readiness label for each area is then derived post-optimizati
 
 This is consistent with the brief: Area Readiness remains a communication layer that should stay credible relative to actual run behavior.
 
-\section*{11. Notes on Preprocessing}
+\section*{12. Notes on Preprocessing}
 
 Several business requirements are most naturally enforced before optimization:
 
@@ -265,7 +379,7 @@ Mathematically, those steps determine the data tensors $a_{jr}$, $\delta_{rd}$, 
 
 In particular, the statement ``area boundaries are guidance, not hard walls'' is implemented by allowing cross-area candidate routes during preprocessing whenever their geography score remains strong.
 
-\section*{12. Why This Formulation Fits Version 1}
+\section*{13. Why This Formulation Fits Version 1}
 
 This formulation is appropriate for Version 1 because it is:
 
@@ -280,7 +394,7 @@ This formulation is appropriate for Version 1 because it is:
 
 The model is also a practical bridge to implementation in Pyomo. The binary variables $x_{rcv}$, $y_j$, and $z_j$ lead directly to a mixed-integer linear programming model once the candidate route set has been generated.
 
-\section*{13. Explicitly Out of Scope}
+\section*{14. Explicitly Out of Scope}
 
 The following elements are intentionally excluded from the Version 1 optimization model:
 
@@ -292,7 +406,7 @@ The following elements are intentionally excluded from the Version 1 optimizatio
     \item fully global stop-level vehicle routing across the whole week.
 \end{itemize}
 
-\section*{14. Next Modeling Step}
+\section*{15. Next Modeling Step}
 
 The next step is to convert this mathematical formulation into a Pyomo implementation with:
 
@@ -302,87 +416,5 @@ The next step is to convert this mathematical formulation into a Pyomo implement
     \item calibrated seasonal weights;
     \item test fixtures for special routes, duplicate addresses, standby selection, and area readiness.
 \end{itemize}
-
-\end{document}
-
-\subsubsection*{Key Concepts}
-
-\begin{itemize}
-    \item \textbf{State:} A feasible inspection route starting and ending at node $0$, visiting a subset of nodes $\Omega \subseteq \{1, \ldots, N\}$.
-    \item \textbf{Objective Function:}
-    \[
-    \max\left( \sum_{i=0}^{N}\sum_{j=0}^{N} w_{i} x_{i,j} - \sum_{i=0}^{N}\sum_{j=0}^{N} c \cdot d_{i,j} \cdot x_{i,j} \right)
-    \]
-    \item \textbf{Constraints:} Each candidate route must satisfy the inspection count limit $|\Omega| \leq P$, total time limit $T_{\text{max}}$, and local and global distance constraints.
-    \item \textbf{Temperature:} Controls the acceptance of worse solutions to escape local minima.
-    \item \textbf{Cooling schedule:} Determines how temperature decreases over time.
-\end{itemize}
-
-\subsubsection*{Neighborhood Operations}
-
-To explore the solution space, we define several perturbation operators:
-
-\begin{itemize}
-    \item \textbf{Node Insertion:} Randomly insert a new node $j \notin \Omega$ into the current route at a random position, if it satisfies constraints.
-    \item \textbf{Node Deletion:} Randomly remove a node $j \in \Omega$, except the start node.
-    \item \textbf{Node Swap:} Swap two nodes $i, j \in \Omega$, modifying the order of visits.
-    \item \textbf{External Swap:} Replace a node $i \in \Omega$ with another node $j \notin \Omega$.
-    \item \textbf{2-opt Flip:} Reverse a subsegment of the route to reduce total distance.
-\end{itemize}
-
-\subsubsection*{Simulated Annealing Algorithm}
-
-\begin{algorithm}[H]
-\caption{Simulated Annealing for Inspection Routing}
-\begin{algorithmic}[1]
-\State Initialize route $\Omega_0$ with feasible nodes
-\State $T \gets T_{\text{start}},\ T_{\text{end}} \gets$ final temperature
-\While{$T > T_{\text{end}}$}
-    \For{$k = 1$ to $K$ (inner loop)}
-        \State $r_{\text{new}} \gets$ apply a random neighbor operation to $\Omega$
-        \If{$r_{\text{new}}$ is feasible}
-            \State $\Delta \gets \text{Objective}(r_{\text{new}}) - \text{Objective}(\Omega)$
-            \If{$\Delta > 0$}
-                \State Accept new route
-            \ElsIf{$\exp\left(\frac{\Delta}{T}\right) > \text{random}(0,1)$}
-                \State Accept new route with probability
-            \EndIf
-        \EndIf
-    \EndFor
-    \State $T \gets \alpha T$ \Comment{Cooling: $\alpha \in (0,1)$}
-\EndWhile
-\end{algorithmic}
-\end{algorithm}
-
-\subsubsection*{Feasibility Check}
-
-Every new route $\Omega'$ generated during neighborhood exploration is accepted only if:
-\begin{itemize}
-    \item The number of nodes visited does not exceed $P$.
-    \item The total travel and inspection time is within $T_{\text{max}}$:
-    \[
-    \sum_{(i,j) \in \Omega'} t_{ij} + \tau_j \leq T_{\text{max}}
-    \]
-    \item The distances $d_{ij} \leq D_{\max}$ for entering and exiting zones.
-    \item The step distances $d_{ij} \leq D'_{\max}$ between consecutive visits.
-\end{itemize}
-
-\subsubsection*{Advantages}
-
-Simulated Annealing avoids local optima by probabilistically accepting worse solutions during early stages. With well-chosen operators and cooling schedules, SA efficiently explores complex route spaces.
-
-\subsubsection*{Implementation Notes}
-
-\begin{itemize}
-    \item The initial solution can be constructed greedily by selecting the $P$ nodes with highest $(w_i - c \cdot d_{0i})$ ratios.
-    \item Use a priority queue or randomized selection for neighbor generation.
-    \item Recompute route cost incrementally where possible to improve efficiency.
-\end{itemize}
-
-
-
-
-
-
 
 \end{document}
