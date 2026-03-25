@@ -16,9 +16,11 @@ from shapely.geometry import shape, Point
 import geopandas as gpd
 
 
-from route_finder_sa import *
-from route_finder_MILP import *
-from route_finder_BFS import *
+# from route_finder_sa import *
+# from route_finder_MILP import *
+# from route_finder_BFS import *
+
+from weekly_data import load_weekly_data
 
 TAXICAB = False
 if TAXICAB:
@@ -37,13 +39,18 @@ USE_SPLIT_MATRIX = True  # True  #
 # Whether to show resulting path Map
 SHOW_FOUND_PATH = True  # False
 
-# Locations data file
+# ---------- Data source switch ----------
+# Set USE_NES_DATA = True to load from weekly_data.py / data/ CSVs
+# Set USE_NES_DATA = False to keep legacy Rome CSV loading
+USE_NES_DATA = True  # False  #
+
+# Locations data file (legacy mode only)
 CHECKPOINTS_LOCATIONS = "rome_coordinates_only.csv"  # "data3km.csv"  #  "data.txt"  # "data_test.txt"  # "data_test2.csv"  #      "data_new.txt"  #    "data_roma2.csv"  #       #
-# GeoJSON regions file
+# GeoJSON regions file (legacy mode only)
 GEOJSON_FILE = "Areas.geojson"
 
-START_TEST = 5  # The index of the test to work on
-INDEX_TRANSPORT = 1  # 0 - walking, 1 - auto
+START_TEST = 5  # The index of the test to work on (legacy mode)
+INDEX_TRANSPORT = 1  # 0 - walking, 1 - auto (legacy); NES always uses drive
 
 # Methods using
 USE_STREET_FILL = False  # True  #
@@ -64,7 +71,7 @@ ITER_FILTER_MAX = 3
 MIN_CHECKPOINTS = 10
 RADIUS_ADD = 250
 
-# Maximum number of inspections
+# Maximum number of inspections (global upper bound, overridden by vehicle capacity Q_k)
 P = 20  # 14  #
 
 # Whether to show maps
@@ -93,16 +100,20 @@ INSPECT_RADIUS = [200, 500]
 
 # Maximum time of inspections lap (minutes)
 Tmax = 6 * 60
-# Inspection time (minutes)
+# Inspection time (minutes) — legacy default; NES uses per-job tau_j
 TI = 20
 
-# Speed of the transports
+# Speed of the transports — legacy per-mode; NES uses per-vehicle speed_mpm
 KMHR_MMIN = 1000.0 / 60  # to m/min
 V = [4 * KMHR_MMIN, 30 * KMHR_MMIN]
 
-# Cost of meter per transport
+# Cost of meter per transport — legacy; NES uses per-vehicle cost_per_metre
 KM_M = 0.001  # Meters in 1 km division
 C = [0.55 * KM_M, 0.9 * KM_M]
+
+# NES-specific cluster defaults (metres)
+NES_CLUSTER_RADIUS = 30_000   # 30 km from technician home
+NES_INSPECT_RADIUS = 15_000   # 15 km max between consecutive stops
 
 
 # print(V, C)
@@ -314,6 +325,334 @@ def extract_coordinates(df):
     return [(row["latitude"], row["longitude"]) for _, row in df.iterrows()]
 
 
+# ---------------------------------------------------------------------------
+# NES weekly data loader — converts WeeklyData into the DataFrame
+# format expected by the rest of this script.
+# ---------------------------------------------------------------------------
+
+def load_nes_weekly(data_dir=None):
+    """
+    Load NES weekly data via weekly_data.py and return:
+      - df_checkpoints: DataFrame with columns matching legacy format
+        (name, latitude, longitude, revenues, region, service_time_min)
+      - wd: full WeeklyData object (jobs, technicians, vehicles, exceptions)
+    """
+    wd = load_weekly_data(data_dir)
+    rows = []
+    for j in wd.jobs:
+        if j.status != "candidate":
+            continue
+        rows.append({
+            "name": j.address,
+            "latitude": j.latitude,
+            "longitude": j.longitude,
+            "revenues": j.value,
+            "region": j.area_id,
+            "route_type": j.route_type,
+            "helper_needed": j.helper_needed,
+            "service_time_min": j.service_time_min,
+            "job_id": j.job_id,
+        })
+    df = pd.DataFrame(rows)
+    print(f"Loaded {len(df)} candidate jobs from NES weekly data")
+    print(df.head())
+    return df, wd
+
+
+# ======================================================================
+# Layer 1 — Weekly Scheduling (assign jobs to technician-vehicle-day)
+# ======================================================================
+
+def solve_scheduling(wd, lambda_uniformity=0.1, T_max_service=Tmax):
+    """
+    Layer-1 scheduling MILP.
+
+    Assigns each candidate job to at most one (technician, vehicle, day) triple.
+    Objective: maximise total weighted job value minus a workload-uniformity penalty.
+
+    Parameters
+    ----------
+    wd : WeeklyData
+        Weekly data containing jobs, technicians, vehicles, exceptions.
+    lambda_uniformity : float
+        Penalty weight for workload deviation (higher = more balanced).
+    T_max_service : float
+        Maximum daily service-time budget (minutes, travel excluded).
+
+    Returns
+    -------
+    assignments : dict[(tech_id, vehicle_id, day)] -> list[Job]
+        Mapping from each active (tech, vehicle, day) slot to assigned jobs.
+    unassigned : list[Job]
+        Jobs that were not assigned by the scheduler.
+    """
+    try:
+        from pyomo.environ import (
+            ConcreteModel, Var, Objective, Constraint, SolverFactory,
+            Binary, NonNegativeReals, maximize, value as pyo_value,
+        )
+    except ImportError:
+        print("[Layer-1] Pyomo not available — falling back to greedy scheduler")
+        return _greedy_scheduling(wd, T_max_service)
+
+    # ----- Build index sets -----
+    jobs = [j for j in wd.jobs if j.status == "candidate"]
+    techs = wd.technicians
+    vehicles = wd.vehicles
+    exceptions = wd.exceptions
+
+    # Build unavailability lookup
+    unavail = set()
+    for ex in exceptions:
+        if ex.effect_type == "unavailable":
+            unavail.add((ex.scope_type, ex.scope_id, ex.day))
+
+    days = sorted(VALID_DAYS)  # Mon-Fri
+
+    # Tech / vehicle available-day sets (after exceptions)
+    tech_days = {}
+    for t in techs:
+        td = set(t.available_days)
+        for d in list(td):
+            if ("technician", t.tech_id, d) in unavail:
+                td.discard(d)
+        tech_days[t.tech_id] = td
+
+    veh_days = {}
+    for k in vehicles:
+        kd = set(k.available_days)
+        for d in list(kd):
+            if ("vehicle", k.vehicle_id, d) in unavail:
+                kd.discard(d)
+        veh_days[k.vehicle_id] = kd
+
+    # Pre-compute eligibility
+    def is_eligible(j, t, k, d):
+        if d not in tech_days.get(t.tech_id, set()):
+            return False
+        if d not in veh_days.get(k.vehicle_id, set()):
+            return False
+        # Skill check — job route_type should be coverable
+        if j.route_type == "radiator" and "radiator" not in k.capability_tags:
+            return False
+        if j.helper_needed and "helper" not in [s.lower() for s in t.skills]:
+            pass  # soft — helpers are paired separately
+        # Distance check (cluster radius)
+        dist = haversine(t.home_lat, t.home_lon, j.latitude, j.longitude)
+        if dist > NES_CLUSTER_RADIUS:
+            return False
+        return True
+
+    eligible = {}  # (j_idx, t_idx, k_idx, d) -> True
+    for ji, j in enumerate(jobs):
+        for ti, t in enumerate(techs):
+            for ki, k in enumerate(vehicles):
+                for d in days:
+                    if is_eligible(j, t, k, d):
+                        eligible[(ji, ti, ki, d)] = True
+
+    if not eligible:
+        print("[Layer-1] No eligible assignments — returning empty schedule")
+        return {}, jobs
+
+    # ----- Build Pyomo model -----
+    model = ConcreteModel("Layer1_Scheduling")
+
+    model.ELIG = list(eligible.keys())
+    model.y = Var(model.ELIG, domain=Binary)
+
+    # Auxiliary: tech-vehicle-day indicator z[t,k,d]
+    tkd_set = list({(ti, ki, d) for (_, ti, ki, d) in model.ELIG})
+    model.TKD = tkd_set
+    model.z = Var(tkd_set, domain=Binary)
+
+    # Auxiliary: deviation variables per (tech, day)
+    td_set = list({(ti, d) for (_, ti, _, d) in model.ELIG})
+    model.TD = td_set
+    model.s_plus = Var(td_set, domain=NonNegativeReals)
+    model.s_minus = Var(td_set, domain=NonNegativeReals)
+
+    # Average load
+    total_svc = sum(j.service_time_min for j in jobs)
+    active_slots = len({(ti, d) for (_, ti, _, d) in model.ELIG})
+    avg_load = total_svc / max(active_slots, 1)
+
+    # ----- Objective -----
+    def obj_rule(m):
+        weighted_value = sum(jobs[ji].value * m.y[ji, ti, ki, d]
+                            for (ji, ti, ki, d) in m.ELIG)
+        penalty = lambda_uniformity * sum(m.s_plus[td] + m.s_minus[td]
+                                          for td in m.TD)
+        return weighted_value - penalty
+    model.OBJ = Objective(rule=obj_rule, sense=maximize)
+
+    # ----- Constraints -----
+
+    # (S1) Each job assigned at most once
+    from collections import defaultdict as _dd
+    jobs_to_elig = _dd(list)
+    for (ji, ti, ki, d) in model.ELIG:
+        jobs_to_elig[ji].append((ji, ti, ki, d))
+
+    def assign_once_rule(m, ji):
+        return sum(m.y[e] for e in jobs_to_elig[ji]) <= 1
+    model.assign_once = Constraint(list(jobs_to_elig.keys()), rule=assign_once_rule)
+
+    # (S3) Vehicle capacity per (tech, vehicle, day)
+    tkd_to_elig = _dd(list)
+    for (ji, ti, ki, d) in model.ELIG:
+        tkd_to_elig[(ti, ki, d)].append((ji, ti, ki, d))
+
+    def cap_rule(m, ti, ki, d):
+        k = vehicles[ki]
+        return sum(m.y[e] for e in tkd_to_elig[(ti, ki, d)]) <= k.capacity
+    model.sched_cap = Constraint(tkd_set, rule=cap_rule)
+
+    # (S4) Daily service-time budget
+    def time_rule(m, ti, ki, d):
+        return sum(jobs[ji].service_time_min * m.y[ji, ti2, ki2, d2]
+                   for (ji, ti2, ki2, d2) in tkd_to_elig[(ti, ki, d)]) <= T_max_service
+    model.sched_time = Constraint(tkd_set, rule=time_rule)
+
+    # (S5/S6) Link y to z, one vehicle per tech per day, one tech per vehicle per day
+    def link_rule(m, ti, ki, d):
+        return sum(m.y[e] for e in tkd_to_elig[(ti, ki, d)]) <= P * m.z[ti, ki, d]
+    model.link_yz = Constraint(tkd_set, rule=link_rule)
+
+    td_to_k = _dd(list)
+    for (ti, ki, d) in tkd_set:
+        td_to_k[(ti, d)].append((ti, ki, d))
+
+    def one_veh_rule(m, ti, d):
+        return sum(m.z[tkd] for tkd in td_to_k[(ti, d)]) <= 1
+    model.one_veh = Constraint(list(td_to_k.keys()), rule=one_veh_rule)
+
+    kd_to_t = _dd(list)
+    for (ti, ki, d) in tkd_set:
+        kd_to_t[(ki, d)].append((ti, ki, d))
+
+    def one_tech_rule(m, ki, d):
+        return sum(m.z[tkd] for tkd in kd_to_t[(ki, d)]) <= 1
+    model.one_tech = Constraint(list(kd_to_t.keys()), rule=one_tech_rule)
+
+    # (S7/S8) Load & uniformity
+    td_to_elig = _dd(list)
+    for (ji, ti, ki, d) in model.ELIG:
+        td_to_elig[(ti, d)].append((ji, ti, ki, d))
+
+    def load_rule(m, ti, d):
+        load = sum(jobs[ji].service_time_min * m.y[e]
+                   for e in td_to_elig[(ti, d)])
+        return load - avg_load == m.s_plus[ti, d] - m.s_minus[ti, d]
+    model.load_balance = Constraint(td_set, rule=load_rule)
+
+    # ----- Solve -----
+    solver = SolverFactory("cbc")
+    solver.options["seconds"] = 120  # time limit
+    result = solver.solve(model, tee=False)
+
+    # ----- Extract assignments -----
+    assignments = _dd(list)
+    assigned_job_indices = set()
+    for (ji, ti, ki, d) in model.ELIG:
+        if pyo_value(model.y[ji, ti, ki, d]) > 0.5:
+            t = techs[ti]
+            k = vehicles[ki]
+            assignments[(t.tech_id, k.vehicle_id, d)].append(jobs[ji])
+            assigned_job_indices.add(ji)
+
+    unassigned = [jobs[ji] for ji in range(len(jobs)) if ji not in assigned_job_indices]
+
+    print(f"[Layer-1] Scheduled {len(assigned_job_indices)}/{len(jobs)} jobs "
+          f"across {len(assignments)} (tech, vehicle, day) slots")
+    for key, jlist in sorted(assignments.items()):
+        total_svc_slot = sum(jj.service_time_min for jj in jlist)
+        print(f"  {key}: {len(jlist)} jobs, {total_svc_slot:.0f} min service")
+
+    return dict(assignments), unassigned
+
+
+def _greedy_scheduling(wd, T_max_service):
+    """
+    Fallback greedy scheduler when Pyomo is not available.
+    Assigns jobs round-robin to technician-day slots within eligibility/capacity.
+    """
+    from weekly_data import haversine as hav
+
+    jobs = [j for j in wd.jobs if j.status == "candidate"]
+    techs = wd.technicians
+    vehicles = wd.vehicles
+    exceptions = wd.exceptions
+    days = sorted(VALID_DAYS)
+
+    unavail = set()
+    for ex in exceptions:
+        if ex.effect_type == "unavailable":
+            unavail.add((ex.scope_type, ex.scope_id, ex.day))
+
+    # Build slots: (tech, vehicle, day) with remaining capacity
+    slots = []
+    for t in techs:
+        for k in vehicles:
+            for d in days:
+                if d not in t.available_days:
+                    continue
+                if d not in k.available_days:
+                    continue
+                if ("technician", t.tech_id, d) in unavail:
+                    continue
+                if ("vehicle", k.vehicle_id, d) in unavail:
+                    continue
+                slots.append({
+                    "tech": t, "vehicle": k, "day": d,
+                    "remaining_cap": k.capacity,
+                    "remaining_time": T_max_service,
+                    "jobs": [],
+                })
+
+    # Sort jobs by value descending
+    jobs_sorted = sorted(jobs, key=lambda j: j.value, reverse=True)
+    assigned_ids = set()
+
+    for j in jobs_sorted:
+        if j.job_id in assigned_ids:
+            continue
+        best_slot = None
+        best_dist = float("inf")
+        for s in slots:
+            if s["remaining_cap"] <= 0:
+                continue
+            if s["remaining_time"] < j.service_time_min:
+                continue
+            if j.route_type == "radiator" and "radiator" not in s["vehicle"].capability_tags:
+                continue
+            dist = hav(s["tech"].home_lat, s["tech"].home_lon, j.latitude, j.longitude)
+            if dist > NES_CLUSTER_RADIUS:
+                continue
+            if dist < best_dist:
+                best_dist = dist
+                best_slot = s
+        if best_slot is not None:
+            best_slot["jobs"].append(j)
+            best_slot["remaining_cap"] -= 1
+            best_slot["remaining_time"] -= j.service_time_min
+            assigned_ids.add(j.job_id)
+
+    assignments = {}
+    for s in slots:
+        if s["jobs"]:
+            key = (s["tech"].tech_id, s["vehicle"].vehicle_id, s["day"])
+            assignments[key] = s["jobs"]
+
+    unassigned = [j for j in jobs if j.job_id not in assigned_ids]
+    print(f"[Layer-1 Greedy] Scheduled {len(assigned_ids)}/{len(jobs)} jobs "
+          f"across {len(assignments)} slots")
+    return assignments, unassigned
+
+
+VALID_DAYS = {"Mon", "Tue", "Wed", "Thu", "Fri"}
+
+
 def haversine(lat1, lon1, lat2, lon2):
     """
     Calculate haversine distance
@@ -405,15 +744,22 @@ def street_house_separate(address: str):
     return street_name, house
 
 
-def get_matrix_distances(df: pd.DataFrame, transport_mode: int):
+def get_matrix_distances(df: pd.DataFrame, transport_mode: int,
+                         speed: float = None, cost: float = None,
+                         max_inter_dist: float = None):
     """
     Create Matrix of distances from the dataframe of geolocations
     :param df: dataframe of geolocations
     :param transport_mode: integer to represent walk/drive modes of the map
-    :param seprag[default=None]: the number of SEPRAG to filter outside points
+    :param speed: override vehicle speed (m/min). Defaults to V[transport_mode].
+    :param cost: override cost per metre ($/m). Defaults to C[transport_mode].
+    :param max_inter_dist: override inter-stop radius. Defaults to INSPECT_RADIUS[transport_mode].
     :return: list of distances
     """
     global G, V, INSPECT_RADIUS
+    speed = speed if speed is not None else V[transport_mode]
+    cost = cost if cost is not None else C[transport_mode]
+    max_inter_dist = max_inter_dist if max_inter_dist is not None else INSPECT_RADIUS[transport_mode]
 
     DEBUG_MATRIX = False  # True  #
     # G_proj = ox.project_graph(map_g[mode])
@@ -512,10 +858,10 @@ def get_matrix_distances(df: pd.DataFrame, transport_mode: int):
                 else:
                     dist = abs(r1 - r2)
 
-            price_item = dist * C[transport_mode]
-            time_spent_item = dist / V[transport_mode]
+            price_item = dist * cost
+            time_spent_item = dist / speed
 
-            if dist <= INSPECT_RADIUS[transport_mode]:
+            if dist <= max_inter_dist:
                 dist_matrix.append([i, j, dist, price_item, time_spent_item, rev2])
                 # print(dist)
             else:
@@ -541,15 +887,23 @@ def get_matrix_distances(df: pd.DataFrame, transport_mode: int):
     return dist_matrix
 
 
-def get_matrix_distances2(df1: pd.DataFrame, df2: pd.DataFrame, transport_mode: int):
+def get_matrix_distances2(df1: pd.DataFrame, df2: pd.DataFrame, transport_mode: int,
+                          speed: float = None, cost: float = None,
+                          max_inter_dist: float = None):
     """
     Create Matrix of distances from the dataframe of geolocations
-    :param df: dataframe of geolocations
+    :param df1: first dataframe of geolocations
+    :param df2: second dataframe of geolocations
     :param transport_mode: integer to represent walk/drive modes of the map
-    :param seprag[default=None]: the number of SEPRAG to filter outside points
+    :param speed: override vehicle speed (m/min). Defaults to V[transport_mode].
+    :param cost: override cost per metre ($/m). Defaults to C[transport_mode].
+    :param max_inter_dist: override inter-stop radius. Defaults to INSPECT_RADIUS[transport_mode].
     :return: list of distances
     """
     global G, V, INSPECT_RADIUS
+    speed = speed if speed is not None else V[transport_mode]
+    cost = cost if cost is not None else C[transport_mode]
+    max_inter_dist = max_inter_dist if max_inter_dist is not None else INSPECT_RADIUS[transport_mode]
 
     DEBUG_MATRIX = False  # True  #
     # G_proj = ox.project_graph(map_g[mode])
@@ -653,7 +1007,7 @@ def get_matrix_distances2(df1: pd.DataFrame, df2: pd.DataFrame, transport_mode: 
                 continue
 
             dist_haver = haversine(x1, y1, x2, y2)
-            if dist_haver > INSPECT_RADIUS[transport_mode]:
+            if dist_haver > max_inter_dist:
                 continue
 
             if DEBUG_MATRIX:
@@ -692,10 +1046,10 @@ def get_matrix_distances2(df1: pd.DataFrame, df2: pd.DataFrame, transport_mode: 
                 else:
                     continue
 
-            price_item = dist * C[transport_mode]
-            time_spent_item = dist / V[transport_mode]
+            price_item = dist * cost
+            time_spent_item = dist / speed
 
-            if dist <= INSPECT_RADIUS[transport_mode]:
+            if dist <= max_inter_dist:
                 dist_matrix.append([i, j, dist, price_item, time_spent_item, rev2])
 
     return dist_matrix
@@ -974,15 +1328,25 @@ def draw_routes(
 
 
 if __name__ == "__main__":
-    FILENAME = CHECKPOINTS_LOCATIONS  # 'data_test.txt'  # Data file
-
     SUFFIX = "_taxicab" if TAXICAB else ""
 
+    # ------------------------------------------------------------------
+    # Data loading — NES weekly data or legacy Rome CSV
+    # ------------------------------------------------------------------
+    wd = None           # WeeklyData (NES mode only)
+    vehicles_list = []  # Vehicle objects (NES mode only)
+
     start_time = time.perf_counter()
-    df_checkpoints = load_locations(FILENAME)
+    if USE_NES_DATA:
+        df_checkpoints, wd = load_nes_weekly()
+        vehicles_list = wd.vehicles
+        FILENAME = "nes_weekly"
+    else:
+        FILENAME = CHECKPOINTS_LOCATIONS
+        df_checkpoints = load_locations(FILENAME)
     end_time = time.perf_counter()
     total_time_work += end_time - start_time
-    print("Loadin locations from file ", end_time - start_time, "sec")
+    print("Loading locations: ", end_time - start_time, "sec")
 
     coordinates = extract_coordinates(df_checkpoints)
     if DEBUG:
@@ -991,18 +1355,78 @@ if __name__ == "__main__":
         print(coordinates[-20:])
 
     VISITED = [False for _ in range(len(coordinates) * 100)]
-    TESTS_LOCATIONS = [START_TEST] if isinstance(START_TEST, int) else START_TEST
-    for location_index in TESTS_LOCATIONS:
-        start_loc_y, start_loc_x = TEST_START[location_index]
 
-        transport_index = INDEX_TRANSPORT
-        mode = TRANSPORT_TYPES[transport_index]
+    # ------------------------------------------------------------------
+    # Layer 1 — Scheduling (NES mode only)
+    # ------------------------------------------------------------------
+    scheduling_assignments = None  # dict[(tech_id, veh_id, day)] -> [Job]
+    scheduling_unassigned = None
+    if USE_NES_DATA:
+        print("\n" + "=" * 60)
+        print("LAYER 1 — Weekly Scheduling")
+        print("=" * 60)
+        scheduling_assignments, scheduling_unassigned = solve_scheduling(wd)
 
-        start_time = time.perf_counter()
-        seprag_value = find_SEPRAG(start_loc_x, start_loc_y)
-        end_time = time.perf_counter()
-        total_time_work += end_time - start_time
-        print("Loading SEPRAG", end_time - start_time, "sec")
+    # ------------------------------------------------------------------
+    # Build iteration list
+    # In NES mode: iterate over (tech_id, vehicle_id, day) from Layer 1
+    # In legacy mode: iterate over test start locations
+    # ------------------------------------------------------------------
+    if USE_NES_DATA:
+        # Build a lookup for techs and vehicles by id
+        tech_lookup = {t.tech_id: t for t in wd.technicians}
+        veh_lookup = {k.vehicle_id: k for k in wd.vehicles}
+        iter_items = sorted(scheduling_assignments.keys()) if scheduling_assignments else []
+    else:
+        TESTS_LOCATIONS = [START_TEST] if isinstance(START_TEST, int) else START_TEST
+        iter_items = TESTS_LOCATIONS
+
+    for iter_key in iter_items:
+        if USE_NES_DATA:
+            tech_id, veh_id, day = iter_key
+            tech_obj = tech_lookup[tech_id]
+            veh_obj = veh_lookup[veh_id]
+            start_loc_y, start_loc_x = tech_obj.home_lat, tech_obj.home_lon
+            transport_index = 1  # always drive for NES
+            mode = TRANSPORT_TYPES[transport_index]
+            seprag_value = None  # NES uses area_id, not SEPRAG
+
+            # Per-vehicle parameters from the assigned vehicle
+            c = veh_obj.cost_per_metre
+            velocity = veh_obj.speed_mpm
+            vehicle_capacity = veh_obj.capacity
+
+            assigned_jobs = scheduling_assignments[iter_key]
+            print(f"\n{'='*60}")
+            print(f"LAYER 2 — Routing for {tech_id} ({tech_obj.name}), "
+                  f"vehicle {veh_id}, day {day}")
+            print(f"  Home: ({start_loc_y}, {start_loc_x})")
+            print(f"  Assigned jobs: {len(assigned_jobs)}, "
+                  f"service time: {sum(j.service_time_min for j in assigned_jobs):.0f} min")
+            print(f"{'='*60}")
+        else:
+            location_index = iter_key
+            start_loc_y, start_loc_x = TEST_START[location_index]
+            transport_index = INDEX_TRANSPORT
+            mode = TRANSPORT_TYPES[transport_index]
+
+            start_time = time.perf_counter()
+            seprag_value = find_SEPRAG(start_loc_x, start_loc_y)
+            end_time = time.perf_counter()
+            total_time_work += end_time - start_time
+            print("Loading SEPRAG", end_time - start_time, "sec")
+
+            c = C[transport_index]
+            velocity = V[transport_index]
+            vehicle_capacity = P
+
+        # Cluster and inspect radius defaults
+        if USE_NES_DATA:
+            cluster_radius_current = NES_CLUSTER_RADIUS
+            inspector_radius_current = NES_INSPECT_RADIUS
+        else:
+            cluster_radius_current = CLUSTER_RADIUS[transport_index]
+            inspector_radius_current = INSPECT_RADIUS[transport_index]
 
         print("Distance Matrix calculation/loading")
         start_time = time.perf_counter()
@@ -1015,7 +1439,8 @@ if __name__ == "__main__":
                 while SN < len(df_checkpoints):
                     print(f"{k} distances")
                     distances = get_matrix_distances(
-                        df_checkpoints[SN_prev:NS], transport_index
+                        df_checkpoints[SN_prev:NS], transport_index,
+                        speed=velocity, cost=c, max_inter_dist=inspector_radius_current,
                     )
                     df_distances = pd.DataFrame(
                         data=distances,
@@ -1039,7 +1464,8 @@ if __name__ == "__main__":
                 if SN_prev < len(df_checkpoints):
                     print(f" last {k} distances, {SN_prev}-{len(df_checkpoints)}")
                     distances = get_matrix_distances(
-                        df_checkpoints[SN_prev:], transport_index
+                        df_checkpoints[SN_prev:], transport_index,
+                        speed=velocity, cost=c, max_inter_dist=inspector_radius_current,
                     )
                     df_distances = pd.DataFrame(
                         data=distances,
@@ -1064,7 +1490,8 @@ if __name__ == "__main__":
                             continue
                         df2 = df_checkpoints[j * NS : j * NS + NS]
                         print(f" pair{i} {j} distances")
-                        distances = get_matrix_distances2(df1, df2, transport_index)
+                        distances = get_matrix_distances2(df1, df2, transport_index,
+                            speed=velocity, cost=c, max_inter_dist=inspector_radius_current)
                         df_distances = pd.DataFrame(
                             data=distances,
                             columns=[
@@ -1086,7 +1513,8 @@ if __name__ == "__main__":
                     f"distance_matr_{CHECKPOINTS_LOCATIONS[:-4]}{SUFFIX}.csv"
                 )
             else:
-                distances = get_matrix_distances(df_checkpoints, transport_index)
+                distances = get_matrix_distances(df_checkpoints, transport_index,
+                    speed=velocity, cost=c, max_inter_dist=inspector_radius_current)
                 if DEBUG:
                     print("DISTANCE MATRIX:")
                     print(distances)
@@ -1157,9 +1585,11 @@ if __name__ == "__main__":
         print("Filtering for Cluster set")
         start_time = time.perf_counter()
 
-        # Loop to find 10 checkpoints
-        cluster_radius_current = CLUSTER_RADIUS[transport_index]
-        inspector_radius_current = INSPECT_RADIUS[transport_index]
+        # In NES Layer-2 mode, restrict to jobs assigned by Layer 1
+        if USE_NES_DATA and scheduling_assignments is not None:
+            assigned_job_ids = {j.job_id for j in assigned_jobs}
+        else:
+            assigned_job_ids = None  # no restriction in legacy mode
 
         iter_filter = 0
         while iter_filter < ITER_FILTER_MAX:
@@ -1169,6 +1599,12 @@ if __name__ == "__main__":
             dist_start = {}
             address_list = []
             for id2, data_row2 in df_checkpoints.iterrows():
+                # Layer-1 filter: only consider assigned jobs
+                if assigned_job_ids is not None:
+                    row_jid = data_row2.get("job_id", None)
+                    if row_jid is not None and row_jid not in assigned_job_ids:
+                        continue
+
                 if seprag_value and seprag_value != data_row2["region"]:
                     continue
 
@@ -1228,8 +1664,8 @@ if __name__ == "__main__":
                         except nx.NetworkXNoPath:
                             pass
 
-                    price = dist * C[transport_index]
-                    time_spent = dist / V[transport_index]
+                    price = dist * c
+                    time_spent = dist / velocity
                     if DEBUG:
                         print(start_loc_x, start_loc_y, longitude_x, latitude_y)
                         print(
@@ -1262,11 +1698,12 @@ if __name__ == "__main__":
                                 r0,
                             )
 
+                        svc_time = data_row2["service_time_min"] if USE_NES_DATA and "service_time_min" in df_checkpoints.columns else TI
                         dist_start[id2] = [
                             dist,
                             price,
                             data_row2["name"],
-                            time_spent + TI,
+                            time_spent + svc_time,
                             (longitude_x, latitude_y),
                             data_node,
                             data_row2["revenues"],
@@ -1351,9 +1788,6 @@ if __name__ == "__main__":
             inspector_radius_current += RADIUS_ADD
             iter_filter += 1
 
-        c = C[transport_index]
-        velocity = V[transport_index]
-
         # d = [v[0] for k, v in dist_start.items()]
         # w = [v[-1] for k, v in dist_start.items()]
         # if DEBUG:
@@ -1402,9 +1836,17 @@ if __name__ == "__main__":
             # w[i, j] = price_val
             # tau_matr[i, j] = time_val
 
-        # Initialize time vector
-        tau = np.full(N, TI)
-        tau[0] = 0
+        # Initialize time vector — per-job service time in NES mode
+        if USE_NES_DATA and "service_time_min" in df_checkpoints.columns:
+            tau = np.zeros(N)
+            tau[0] = 0  # depot
+            for cp_id in checkpoint_ids:
+                idx = id_to_index[cp_id]
+                row = df_checkpoints.loc[cp_id]
+                tau[idx] = row["service_time_min"]
+        else:
+            tau = np.full(N, TI)
+            tau[0] = 0
 
         # d = [v[0] for k, v in dist_start.items()]
         # w = [v[-1] for k, v in dist_start.items()]
@@ -1437,7 +1879,8 @@ if __name__ == "__main__":
 
             print("revenues", revenues)
 
-        file_result = open(f"result_{FILENAME[:-4]}_{START_TEST}.txt", "w+")
+        result_tag = f"{tech_id}_{veh_id}_{day}" if USE_NES_DATA else START_TEST
+        file_result = open(f"result_{FILENAME}_{result_tag}.txt", "w+")
 
         # # Run the algorithms
         if HEURISTIC2:
@@ -1445,7 +1888,7 @@ if __name__ == "__main__":
             start_time = time.perf_counter()
             result = Heuristic_search(
                 N - 1,
-                P,
+                vehicle_capacity,
                 Tmax,
                 np.array(revenues),
                 c,
@@ -1480,7 +1923,7 @@ if __name__ == "__main__":
                 best_route, best_score, best_revenue = (
                     solve_routing_Simulated_Annealing_streets(
                         N=N,
-                        P=P,
+                        P=vehicle_capacity,
                         Tmax=Tmax,
                         revenues=revenues,
                         cost=c,
@@ -1501,7 +1944,7 @@ if __name__ == "__main__":
                 best_route, best_score, best_revenue = (
                     solve_routing_Simulated_Annealing(
                         N=N,
-                        P=P,
+                        P=vehicle_capacity,
                         Tmax=Tmax,
                         revenues=revenues,
                         cost=c,
@@ -1554,7 +1997,7 @@ if __name__ == "__main__":
             if USE_STREET_FILL:
                 best_route, t, rev_basic_heur = heuristic_routing_street(
                     N=N,
-                    P=P,
+                    P=vehicle_capacity,
                     Tmax=Tmax,
                     revenues=revenues,
                     cost=c,
@@ -1571,7 +2014,7 @@ if __name__ == "__main__":
             else:
                 best_route, t, rev_basic_heur = heuristic_routing_street(
                     N=N,
-                    P=P,
+                    P=vehicle_capacity,
                     Tmax=Tmax,
                     revenues=revenues,
                     cost=c,
@@ -1606,7 +2049,7 @@ if __name__ == "__main__":
             start_time = time.perf_counter()
             best_route, t, rev = brute_force_routing(
                 N=N,
-                P=P,
+                P=vehicle_capacity,
                 Tmax=Tmax,
                 revenues=revenues,
                 cost=c,
@@ -1640,7 +2083,7 @@ if __name__ == "__main__":
             start_time = time.perf_counter()
             best_route, best_time, best_revenue = solve_routing_MILP(
                 N=N - 1,
-                P=P,
+                P=vehicle_capacity,
                 T_max=Tmax,
                 revenues=revenues,
                 cost=c,

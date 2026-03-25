@@ -1,0 +1,26 @@
+job_id,address,latitude,longitude,area_id,route_type,helper_needed,age_days,value,service_time_min,status,description
+J-001,123 Main St Concord NH,43.2081,-71.5376,Area-1,normal,0,14,250.00,30,candidate,Annual boiler service
+J-002,456 Elm St Manchester NH,42.9956,-71.4548,Area-2,normal,0,7,180.00,25,candidate,Steam trap inspection
+J-003,789 Broadway Nashua NH,42.7654,-71.4676,Area-3,normal,0,21,320.00,45,candidate,Radiator valve replacement
+J-004,12 Oak Ave Concord NH,43.2120,-71.5420,Area-1,normal,0,3,150.00,20,candidate,Thermostat calibration
+J-005,88 Pine Rd Derry NH,42.8806,-71.3273,Area-2,normal,0,30,410.00,60,candidate,Full system flush
+J-006,34 Maple Dr Bedford NH,42.9465,-71.5158,Area-2,normal,0,12,220.00,25,candidate,Pressure relief valve test
+J-007,56 Cedar Ln Merrimack NH,42.8615,-71.4935,Area-3,normal,0,9,190.00,30,candidate,Zone valve repair
+J-008,901 River Rd Bow NH,43.1328,-71.5384,Area-1,normal,0,17,275.00,40,candidate,Expansion tank replacement
+J-009,22 Church St Keene NH,42.9339,-72.2783,Area-4,nh_overnight,0,45,520.00,90,candidate,Full boiler overhaul
+J-010,67 State St Portsmouth NH,43.0718,-70.7626,Area-5,normal,0,10,200.00,30,candidate,Annual inspection
+J-011,145 South St Concord NH,43.2003,-71.5340,Area-1,radiator,0,8,350.00,50,candidate,Radiator run - 3 units
+J-012,78 North Main St Manchester NH,43.0012,-71.4620,Area-2,normal,0,25,300.00,35,candidate,Steam pipe insulation
+J-013,33 Lake Ave Laconia NH,43.5278,-71.4714,Area-6,normal,0,40,380.00,45,candidate,Boiler efficiency test
+J-014,55 Market St Portsmouth NH,43.0770,-70.7580,Area-5,normal,0,5,170.00,20,candidate,Thermostat replacement
+J-015,210 Central St Franklin NH,43.4453,-71.6474,Area-6,normal,0,18,260.00,35,candidate,Zone control repair
+J-016,19 Depot St Concord NH,43.2075,-71.5390,Area-1,helper,1,11,450.00,120,candidate,Boiler install assist
+J-017,400 Amherst St Nashua NH,42.7710,-71.4910,Area-3,normal,0,6,185.00,25,candidate,Pipe leak repair
+J-018,88 Hanover St Manchester NH,42.9910,-71.4630,Area-2,normal,0,33,340.00,45,candidate,Steam system balancing
+J-019,12 Main St Peterborough NH,42.8706,-71.9517,Area-4,nh_overnight,0,50,480.00,90,candidate,Full system overhaul
+J-020,300 Daniel Webster Hwy Merrimack NH,42.8580,-71.5010,Area-3,normal,0,15,230.00,35,candidate,Pump replacement
+J-021,145 South St Concord NH,43.2003,-71.5340,Area-1,normal,0,20,200.00,30,candidate,Follow-up valve check
+J-022,77 Pleasant St Concord NH,43.2065,-71.5355,Area-1,radiator,0,13,360.00,50,candidate,Radiator run - 2 units
+J-023,50 West St Keene NH,42.9345,-72.2800,Area-4,normal,0,28,310.00,40,candidate,Annual maintenance
+J-024,1010 Elm St Manchester NH,42.9870,-71.4545,Area-2,helper,1,4,500.00,120,candidate,Boiler replacement
+J-025,65 Bridge St Manchester NH,42.9990,-71.4580,Area-2,normal,0,22,290.00,35,candidate,Condensate return repair

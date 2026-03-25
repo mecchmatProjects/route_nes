@@ -1,0 +1,6 @@
+vehicle_id,vehicle_type,capability_tags,available_days,speed_mpm,cost_per_metre,capacity
+V-2,radiator_van,"radiator,install,overhaul","Mon,Tue,Wed,Thu,Fri",400,0.00045,8
+V-4,capacity_switch,"boiler_service,steam_trap","Mon,Wed,Fri",500,0.00030,10
+V-5,service_truck,"boiler_service,steam_trap,zone_valve,pipe_repair,pump","Mon,Tue,Wed,Thu,Fri",500,0.00035,14
+V-6,service_truck,"boiler_service,steam_trap,zone_valve,pipe_repair,pump","Mon,Tue,Wed,Thu,Fri",500,0.00035,14
+V-7,service_truck,"boiler_service,radiator,install","Mon,Tue,Wed,Thu,Fri",450,0.00040,12

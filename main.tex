@@ -22,24 +22,27 @@
 % ===================================================================
 
 New England SteamWorks (NES) dispatches multiple technicians with service vehicles to perform maintenance jobs across a wide geographic region every week.
-We model the weekly dispatch--planning task as a \emph{Clustered Vehicle Routing Problem} (Cluster--first, Route--second) with side constraints on technician skills, vehicle capabilities, special route types, and seasonal fairness.
+The planning task is decomposed into two sequential optimisation layers:
 
-The planning engine must:
+\begin{enumerate}
+    \item \textbf{Layer~1 --- Weekly Scheduling:} Assign candidate jobs to (technician, vehicle, day) triples so as to maximise total weighted job value while keeping workloads approximately uniform across workers and vehicles.
+    \item \textbf{Layer~2 --- Daily Routing:} For each (technician, vehicle, day) bundle produced by Layer~1, solve an intra--cluster Vehicle Routing Problem to determine the optimal visit sequence.
+\end{enumerate}
+
+The engine must:
 \begin{itemize}
-    \item Maximize the total weighted value of jobs served each week;
-    \item Minimize total driving distance within each daily route;
+    \item Maximise the total weighted value of jobs served each week (Layer~1);
+    \item Minimise total driving distance within each daily route (Layer~2);
     \item Respect capacity, time, skill, vehicle, and geographic constraints;
     \item Produce reviewable route/day proposals (not direct calendar writes).
 \end{itemize}
-
-Planning is \textbf{route--first}: the engine first determines weekly demand shape and capacity, then builds geographic clusters, then solves an intra--cluster routing problem for each technician--day pair.
 
 % ===================================================================
 \section*{Key Objectives (KPIs)}
 % ===================================================================
 \begin{itemize}
     \item \textbf{Primary KPI:} Weighted job score (combines revenue, aging pressure, and seasonal fairness).
-    \item \textbf{Secondary KPIs:} Total driving distance, route compactness, area readiness.
+    \item \textbf{Secondary KPIs:} Workload uniformity, total driving distance, route compactness, area readiness.
 \end{itemize}
 
 % ===================================================================
@@ -49,7 +52,7 @@ Planning is \textbf{route--first}: the engine first determines weekly demand sha
 \begin{itemize}
     \item \textbf{ServiceM8} --- system of record for jobs, technicians, and operational data.
     \item \textbf{Airtable} --- scheduling rules, policy settings, review layers.
-    \item \textbf{Python Engine} --- planning, clustering, scoring, routing, and output generation.
+    \item \textbf{Python Engine} --- scheduling (Layer~1), clustering, routing (Layer~2), and output generation.
     \item \textbf{Make\,/\,Zapier} --- orchestration and automation between the above.
 \end{itemize}
 
@@ -61,7 +64,7 @@ The Python engine consumes structured inputs and produces structured outputs; it
 \begin{itemize}
     \item $\mathcal{J} = \{1,\dots,J\}$ --- weekly candidate job pool (after exclusion filters).
     \item $\mathcal{T} = \{1,\dots,T\}$ --- available technicians.
-    \item $\mathcal{V} = \{1,\dots,V\}$ --- available vehicles.
+    \item $\mathcal{K} = \{1,\dots,K\}$ --- available vehicles.
     \item $\mathcal{D} = \{1,\dots,D\}$ --- working days in the planning week ($D \leq 5$).
     \item $\mathcal{A}$ --- set of geographic areas / zones.
     \item For a given technician $t \in \mathcal{T}$ on day $d \in \mathcal{D}$, the \emph{cluster} of feasible jobs is $\mathcal{C}_{t,d} \subseteq \mathcal{J}$ (Section~\ref{sec:clustering}).
@@ -78,7 +81,7 @@ The Python engine consumes structured inputs and produces structured outputs; it
     \item \textbf{V-5, V-6, V-7} --- standard service vehicles.
 \end{itemize}
 
-Each vehicle $v$ has a set of capability tags $\mathit{cap}_v$ and a daily availability vector.
+Each vehicle $k$ has a set of capability tags $\mathit{cap}_k$, a daily availability vector, a speed $v_k$ (m/min), a cost rate $c_k$ (\$/m), and a stop capacity $Q_k$.
 
 \subsection*{Technician Parameters}
 Each technician $t$ is characterised by:
@@ -97,17 +100,19 @@ Each job $j \in \mathcal{J}$ carries:
     \item Helper flag $h_j \in \{0,1\}$.
     \item Age in days $\alpha_j$ (time since job was created).
     \item Base revenue / value $w_j$.
+    \item Service time $\tau_j$ (minutes) --- average on-site duration.
 \end{itemize}
 
 \subsection*{Time and Distance}
 \begin{itemize}
     \item Cluster radius: $R$ (meters) --- maximum Haversine distance from technician start to any job in the cluster.
     \item Maximum inter-stop distance: $r$ (meters) --- maximum distance between consecutive stops.
-    \item Average vehicle speed: $v$ (m/min).
-    \item Cost per meter driven: $c$ (\$/m).
-    \item Service duration per stop: $\tau$ (minutes).
+    \item Vehicle speed: $v_k$ (m/min) --- depends on vehicle $k \in \mathcal{K}$.
+    \item Cost per metre driven: $c_k$ (\$/m) --- depends on vehicle $k \in \mathcal{K}$.
+    \item Service time per stop: $\tau_j$ (minutes) --- depends on job $j \in \mathcal{J}$.
+    \item Vehicle capacity: $Q_k$ --- maximum number of stops vehicle $k$ can serve per route.
     \item Maximum daily route duration: $T_{\max}$ (minutes).
-    \item Maximum stops per route: $P$.
+    \item Maximum stops per route: $P$ (global upper bound; vehicle capacity $Q_k \leq P$).
 \end{itemize}
 
 \subsection*{Seasonal Weights}
@@ -124,7 +129,7 @@ Before route construction the engine applies weekly exceptions:
     \item Vehicle unavailability.
     \item Pre-scheduled long jobs and boiler installs that consume partial capacity.
 \end{itemize}
-These reduce effective weekly capacity before clustering begins.
+These reduce effective weekly capacity before the scheduling layer begins.
 
 % ===================================================================
 \section*{Input Data}
@@ -147,7 +152,8 @@ The engine pre-computes a distance matrix $d_{i,j}$ for every pair of jobs using
 Jobs sharing the same address are grouped for route-shape evaluation (to avoid inflating stop density) and flagged for review. They are never silently removed.
 
 % ===================================================================
-\section*{Planning Pipeline}
+\section*{Planning Pipeline (Two--Layer Architecture)}
+\label{sec:pipeline}
 % ===================================================================
 
 The weekly planning pipeline runs the following stages in order:
@@ -157,19 +163,115 @@ The weekly planning pipeline runs the following stages in order:
     \item \textbf{Exclude} --- Remove jobs already scheduled, cancelled, urgent/manual, or in-workflow.
     \item \textbf{Apply Weekly Exceptions} --- Compute true weekly capacity per technician--vehicle pair.
     \item \textbf{Reserve Special Routes} --- Place Radiator Runs (require V-2), NH Overnight Runs, and helper-needed routes \emph{before} normal filling.
-    \item \textbf{Cluster (Section~\ref{sec:clustering})} --- Build geographic clusters per technician--day.
-    \item \textbf{Route (Section~\ref{sec:model})} --- Solve a VRP within each cluster.
+    \item \textbf{Layer~1: Schedule (Section~\ref{sec:scheduling})} --- Assign remaining jobs to (technician, vehicle, day) triples via the scheduling MILP.
+    \item \textbf{Layer~2: Cluster \& Route (Sections~\ref{sec:clustering}--\ref{sec:model})} --- For each (technician, vehicle, day) bundle, build a geographic cluster, then solve the intra--cluster VRP.
     \item \textbf{Select Standby Jobs} --- Choose plausible backup jobs per route.
     \item \textbf{Compute Area Readiness} --- Derive area communication layer (\texttt{Good} / \texttt{Moderate} / \texttt{Lean}).
     \item \textbf{Render Outputs} --- Route maps, flags, summaries, reason codes.
 \end{enumerate}
 
 % ===================================================================
-\section*{Clustering Phase}
+\section*{Layer~1: Weekly Scheduling Model (MILP)}
+\label{sec:scheduling}
+% ===================================================================
+
+The scheduling layer decides \emph{which} jobs to assign and \emph{to whom} (technician $t$, vehicle $k$, day $d$), seeking to maximise total weighted job value subject to eligibility, capacity, and workload-balance constraints.
+
+\subsection*{Eligibility Pre-filter}
+
+Define the binary parameter:
+\[
+e_{j,t,k,d} =
+\begin{cases}
+1 & \text{if job $j$ may be assigned to technician $t$ with vehicle $k$ on day $d$},\\
+0 & \text{otherwise}.
+\end{cases}
+\]
+$e_{j,t,k,d} = 1$ requires all of the following:
+\begin{itemize}
+    \item Technician $t$ is available on day $d$: $d \in \mathcal{D}_t$.
+    \item Vehicle $k$ is available on day $d$: $d \in \mathcal{D}_k$.
+    \item $\mathit{skill}_t \supseteq \text{req}(j)$: technician skills cover job requirements.
+    \item $\mathit{cap}_k \supseteq \rho_j$: vehicle capabilities cover the route type.
+    \item $\text{haversine}(y_t, x_t, \mathrm{lat}_j, \mathrm{lon}_j) \leq R$: job within cluster radius.
+    \item No prohibited technician--job pairing.
+\end{itemize}
+
+\subsection*{Decision Variables}
+\[
+y_{j,t,k,d} \in \{0,1\} \quad \forall\, j \in \mathcal{J},\; t \in \mathcal{T},\; k \in \mathcal{K},\; d \in \mathcal{D}
+\]
+$y_{j,t,k,d} = 1$ means job $j$ is assigned to technician $t$, vehicle $k$, on day $d$.
+
+\subsection*{Auxiliary Variables}
+\begin{itemize}
+    \item $L_{t,d}$: total service-time load of technician $t$ on day $d$ (continuous, $\geq 0$).
+    \item $L_{k,d}$: total service-time load of vehicle $k$ on day $d$ (continuous, $\geq 0$).
+    \item $\bar{L}$: average per-slot load across all active (technician, day) pairs (parameter computed in pre-processing or auxiliary variable).
+    \item $s^+_{t,d},\; s^-_{t,d} \geq 0$: positive/negative deviation of $L_{t,d}$ from $\bar{L}$ (for linearised uniformity).
+\end{itemize}
+
+\subsection*{Objective Function}
+
+Maximise total weighted job value minus a uniformity penalty:
+\begin{equation}
+\max \;\;
+\underbrace{\sum_{j \in \mathcal{J}} \sum_{t \in \mathcal{T}} \sum_{k \in \mathcal{K}} \sum_{d \in \mathcal{D}} w_j \, y_{j,t,k,d}}_{\text{total assigned weight}}
+\;-\;
+\underbrace{\lambda \sum_{t \in \mathcal{T}} \sum_{d \in \mathcal{D}} \bigl(s^+_{t,d} + s^-_{t,d}\bigr)}_{\text{uniformity penalty}}
+\label{eq:sched_obj}
+\end{equation}
+
+where $\lambda \geq 0$ is a tunable penalty weight (larger $\lambda$ enforces stronger balance).
+
+\subsection*{Subject to:}
+
+\begin{align}
+%--- (S1) each job assigned at most once ---
+& \sum_{t \in \mathcal{T}} \sum_{k \in \mathcal{K}} \sum_{d \in \mathcal{D}} y_{j,t,k,d} \leq 1, \quad \forall\, j \in \mathcal{J}
+    && \text{(Each job assigned at most once)} \label{eq:assign_once}\\[4pt]
+%--- (S2) eligibility ---
+& y_{j,t,k,d} \leq e_{j,t,k,d}, \quad \forall\, j,t,k,d
+    && \text{(Eligibility)} \label{eq:eligible}\\[4pt]
+%--- (S3) vehicle capacity per day ---
+& \sum_{j \in \mathcal{J}} y_{j,t,k,d} \leq Q_k, \quad \forall\, t \in \mathcal{T},\; k \in \mathcal{K},\; d \in \mathcal{D}
+    && \text{(Vehicle capacity per day)} \label{eq:sched_cap}\\[4pt]
+%--- (S4) daily time budget ---
+& \sum_{j \in \mathcal{J}} \tau_j \, y_{j,t,k,d} \leq T_{\max}, \quad \forall\, t,k,d
+    && \text{(Service-time budget; travel added in Layer~2)} \label{eq:sched_time}\\[4pt]
+%--- (S5) one vehicle per technician per day ---
+& \sum_{k \in \mathcal{K}} \sum_{j \in \mathcal{J}} y_{j,t,k,d} \leq P \cdot z_{t,k,d}, \quad \forall\, t,d
+    && \text{(Link to vehicle indicator)} \label{eq:one_veh_link}\\[4pt]
+& \sum_{k \in \mathcal{K}} z_{t,k,d} \leq 1, \quad \forall\, t \in \mathcal{T},\; d \in \mathcal{D}
+    && \text{(At most one vehicle per tech per day)} \label{eq:one_veh}\\[4pt]
+& z_{t,k,d} \in \{0,1\}
+    && \label{eq:z_bin}\\[4pt]
+%--- (S6) one technician per vehicle per day ---
+& \sum_{t \in \mathcal{T}} z_{t,k,d} \leq 1, \quad \forall\, k \in \mathcal{K},\; d \in \mathcal{D}
+    && \text{(At most one tech per vehicle per day)} \label{eq:one_tech}\\[4pt]
+%--- (S7) technician load definition ---
+& L_{t,d} = \sum_{j \in \mathcal{J}} \sum_{k \in \mathcal{K}} \tau_j \, y_{j,t,k,d}, \quad \forall\, t,d
+    && \text{(Technician-day load)} \label{eq:tech_load}\\[4pt]
+%--- (S8) uniformity soft constraint ---
+& L_{t,d} - \bar{L} = s^+_{t,d} - s^-_{t,d}, \quad \forall\, t,d
+    && \text{(Deviation from mean load)} \label{eq:uniformity}\\[4pt]
+& s^+_{t,d},\; s^-_{t,d} \geq 0
+    && \label{eq:s_nonneg}
+\end{align}
+
+\paragraph{Notes.}
+\begin{itemize}
+    \item Constraint~\eqref{eq:sched_time} uses service time only (no travel); travel feasibility is enforced in Layer~2 and may cause a small fraction of scheduled jobs to be dropped during routing.
+    \item $\bar{L}$ may be fixed as $\displaystyle \bar{L} = \frac{\sum_{j} \tau_j}{|\{(t,d) : d \in \mathcal{D}_t\}|}$ (total service divided by active slots) or treated as a free variable alongside the deviations.
+    \item For vehicle-level uniformity add analogous $s^+_{k,d}, s^-_{k,d}$ terms.
+\end{itemize}
+
+% ===================================================================
+\section*{Layer~2: Clustering Phase}
 \label{sec:clustering}
 % ===================================================================
 
-We adopt a \textbf{Cluster--first, Route--second} decomposition following the approach implemented in \texttt{route\_finder\_example.py}.
+Given the Layer~1 assignment $(t, k, d) \mapsto \mathcal{J}_{t,k,d}$, the routing layer operates on each such bundle independently.  We adopt a \textbf{Cluster--first, Route--second} decomposition following the approach implemented in SW implementation.
 
 \begin{algorithm}[H]
 \caption{Geographic Cluster Construction for Technician $t$, Day $d$}
@@ -198,11 +300,11 @@ We adopt a \textbf{Cluster--first, Route--second} decomposition following the ap
 Area boundaries act as guidance, not hard walls: neighbouring areas may be mixed when geography meaningfully improves route quality.
 
 % ===================================================================
-\section*{Intra--Cluster Routing Model (MILP)}
+\section*{Layer~2: Intra--Cluster Routing Model (MILP)}
 \label{sec:model}
 % ===================================================================
 
-For each cluster $\mathcal{C}_{t,d}$ we solve an Orienteering-style VRP as a Mixed-Integer Linear Program. Let $N = |\mathcal{C}_{t,d}|$ and index the depot (technician start) as node~$0$.
+For each cluster $\mathcal{C}_{t,d}$ produced from the jobs assigned by Layer~1, we solve an Orienteering-style VRP as a Mixed-Integer Linear Program. Let $N = |\mathcal{C}_{t,d}|$ and index the depot (technician start) as node~$0$.
 
 \subsection*{Parameters}
 \begin{itemize}
@@ -210,8 +312,9 @@ For each cluster $\mathcal{C}_{t,d}$ we solve an Orienteering-style VRP as a Mix
 \item Depot node $0$ with distances $d_{0,i}$, $d_{i,0}$ for $i \in W$.
 \item Road--network distances $d_{i,j}$ between jobs.
 \item Cluster radius $R$ and inter-stop radius $r$ (meters).
-\item Speed $v$ (m/min), cost per metre $c$ (\$/m).
-\item Service time per stop $\tau$ (minutes).
+\item Vehicle speed $v_k$ (m/min) and cost per metre $c_k$ (\$/m) for the assigned vehicle $k$.
+\item Service time $\tau_j$ (minutes) for each job $j$.
+\item Vehicle capacity $Q_k$ --- maximum stops for vehicle $k$ ($Q_k \leq P$).
 \item Job score $w_j$ (revenue adjusted by seasonal weights).
 \item Maximum route duration $T_{\max}$ (minutes).
 \item Maximum number of stops $P$.
@@ -225,17 +328,17 @@ For each cluster $\mathcal{C}_{t,d}$ we solve an Orienteering-style VRP as a Mix
 
 \subsection*{Objective Function}
 
-Maximize the total weighted score minus travel cost for the route $\Omega$:
+Maximize the total weighted score minus travel cost for the route $\Omega$ using vehicle $k$:
 \[
-\max \;\; \sum_{i=0}^{N}\sum_{\substack{j=0\\j\neq i}}^{N} w_{j}\, x_{i,j} \;-\; \sum_{i=0}^{N}\sum_{\substack{j=0\\j\neq i}}^{N} c \cdot d_{i,j} \cdot x_{i,j}
+\max \;\; \sum_{i=0}^{N}\sum_{\substack{j=0\\j\neq i}}^{N} w_{j}\, x_{i,j} \;-\; \sum_{i=0}^{N}\sum_{\substack{j=0\\j\neq i}}^{N} c_k \cdot d_{i,j} \cdot x_{i,j}
 \]
 
 \subsection*{Subject to:}
 
 \begin{align}
-& \sum_{i=1}^{N} \sum_{\substack{j=1\\j\neq i}}^{N} x_{i,j} \leq P
-    && \text{(Max stops per route)} \label{eq:maxstops}\\[4pt]
-& \sum_{i=0}^{N}\sum_{\substack{j=0\\j\neq i}}^{N} x_{i,j}\!\left(\frac{d_{i,j}}{v} + \tau_{j}\right) \leq T_{\max}
+& \sum_{i=1}^{N} \sum_{\substack{j=1\\j\neq i}}^{N} x_{i,j} \leq Q_k
+    && \text{(Vehicle capacity)} \label{eq:capacity}\\[4pt]
+& \sum_{i=0}^{N}\sum_{\substack{j=0\\j\neq i}}^{N} x_{i,j}\!\left(\frac{d_{i,j}}{v_k} + \tau_{j}\right) \leq T_{\max}
     && \text{(Daily time budget)} \label{eq:time}\\[4pt]
 & d_{0,i} \leq R,\;\; d_{i,0} \leq R, \quad i \in W
     && \text{(Cluster radius from depot)} \label{eq:cluster}\\[4pt]
@@ -350,6 +453,7 @@ Outputs are designed for human review by a non-technical owner; the engine does 
 % ===================================================================
 
 \begin{itemize}
+    \item Iterative feedback loop between Layer~1 and Layer~2 (re-schedule infeasible bundles).
     \item Exact stop sequencing and appointment--time optimization (Version~2).
     \item Integration with real-time traffic and drive-time APIs.
     \item Historical job-success and no-show rates to refine scoring weights.
@@ -424,9 +528,9 @@ Simulated Annealing (SA) is a metaheuristic inspired by the annealing process in
     \item \textbf{State:} A feasible inspection route starting and ending at node $0$, visiting a subset of nodes $\Omega \subseteq \{1, \ldots, N\}$.
     \item \textbf{Objective Function:}
     \[
-    \max\left( \sum_{i=0}^{N}\sum_{j=0}^{N} w_{i} x_{i,j} - \sum_{i=0}^{N}\sum_{j=0}^{N} c \cdot d_{i,j} \cdot x_{i,j} \right)
+    \max\left( \sum_{i=0}^{N}\sum_{j=0}^{N} w_{i} x_{i,j} - \sum_{i=0}^{N}\sum_{j=0}^{N} c_k \cdot d_{i,j} \cdot x_{i,j} \right)
     \]
-    \item \textbf{Constraints:} Each candidate route must satisfy the inspection count limit $|\Omega| \leq P$, total time limit $T_{\text{max}}$, and local and global distance constraints.
+    \item \textbf{Constraints:} Each candidate route must satisfy the vehicle capacity limit $|\Omega| \leq Q_k$, total time limit $T_{\text{max}}$, and local and global distance constraints.
     \item \textbf{Temperature:} Controls the acceptance of worse solutions to escape local minima.
     \item \textbf{Cooling schedule:} Determines how temperature decreases over time.
 \end{itemize}
@@ -471,10 +575,10 @@ To explore the solution space, we define several perturbation operators:
 
 Every new route $\Omega'$ generated during neighborhood exploration is accepted only if:
 \begin{itemize}
-    \item The number of nodes visited does not exceed $P$.
-    \item The total travel and inspection time is within $T_{\text{max}}$:
+    \item The number of nodes visited does not exceed $Q_k$.
+    \item The total travel and service time is within $T_{\text{max}}$:
     \[
-    \sum_{(i,j) \in \Omega'} t_{ij} + \tau_j \leq T_{\text{max}}
+    \sum_{(i,j) \in \Omega'} \frac{d_{i,j}}{v_k} + \tau_j \leq T_{\text{max}}
     \]
     \item The distances $d_{ij} \leq D_{\max}$ for entering and exiting zones.
     \item The step distances $d_{ij} \leq D'_{\max}$ between consecutive visits.

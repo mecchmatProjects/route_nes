@@ -1,0 +1,6 @@
+exception_id,scope_type,scope_id,day,effect_type,effect_value
+EX-01,technician,T-03,Fri,unavailable,PTO
+EX-02,vehicle,V-4,Tue,unavailable,maintenance
+EX-03,vehicle,V-4,Thu,unavailable,maintenance
+EX-04,technician,T-01,Wed,partial,boiler_install_3hrs
+EX-05,technician,T-02,Mon,unavailable,training
