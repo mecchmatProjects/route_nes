@@ -9,7 +9,7 @@
 \usepackage{algorithm}
 \usepackage{algpseudocode}
 
-\title{Two--Layer Weekly Service Dispatch:\\Scheduling and Routing for NES}
+\title{Rules--Driven Weekly Service Dispatch\\for New England SteamWorks}
 \author{VB}
 \date{}
 
@@ -22,18 +22,19 @@
 % ===================================================================
 
 New England SteamWorks (NES) dispatches multiple technicians with service vehicles to perform maintenance jobs across a wide geographic region every week.
-The planning task is decomposed into two sequential optimisation layers:
+The planning engine follows a \textbf{rules--first} approach: every scheduling and routing decision is driven by explicit, named business rules rather than opaque numerical optimisation.
+The weekly planning task proceeds in two deterministic phases:
 
 \begin{enumerate}
-    \item \textbf{Layer~1 : Weekly Scheduling:} Assign candidate jobs to (technician, vehicle, day) triples so as to maximise total weighted job value while keeping workloads approximately uniform across workers and vehicles.
-    \item \textbf{Layer~2  Daily Routing:} For each (technician, vehicle, day) bundle produced by Layer~1, solve an intra--cluster Vehicle Routing Problem to determine the optimal visit sequence.
+    \item \textbf{Phase~1 --- Weekly Scheduling:} Score each candidate job, then assign jobs to (technician, vehicle, day) slots by walking down a priority--sorted list and checking eligibility and capacity rules one by one.
+    \item \textbf{Phase~2 --- Daily Stop Ordering:} For each day's assigned job set, arrange stops in a sensible geographic sequence using a nearest--neighbour heuristic.
 \end{enumerate}
 
 The engine must:
 \begin{itemize}
-    \item Maximise the total weighted value of jobs served each week (Layer~1);
-    \item Minimise total driving distance within each daily route (Layer~2);
-    \item Respect capacity, time, skill, vehicle, and geographic constraints;
+    \item Serve as many high--value jobs as possible each week, respecting all business rules;
+    \item Produce compact, drivable daily routes;
+    \item Make every decision explainable---traceable to a named rule and its inputs;
     \item Produce reviewable route/day proposals (not direct calendar writes).
 \end{itemize}
 
@@ -41,8 +42,9 @@ The engine must:
 \section*{Key Objectives (KPIs)}
 % ===================================================================
 \begin{itemize}
-    \item \textbf{Primary KPI:} Weighted job score (combines revenue, aging pressure, and seasonal fairness).
-    \item \textbf{Secondary KPIs:} Workload uniformity, total driving distance, route compactness, area readiness.
+    \item \textbf{Primary goal:} Serve as many high--priority jobs as possible each week (priority = revenue + aging pressure + seasonal fairness).
+    \item \textbf{Secondary goals:} Keep daily workloads roughly even across technicians; keep routes geographically compact; maintain area readiness for customer communication.
+    \item \textbf{Non--goal for Version~1:} Mathematical optimality. The engine should produce \emph{good, explainable} plans---not provably optimal ones.
 \end{itemize}
 
 % ===================================================================
@@ -52,11 +54,11 @@ The engine must:
 \begin{itemize}
     \item \textbf{ServiceM8} -- system of record for jobs, technicians, and operational data.
     \item \textbf{Airtable} -- scheduling rules, policy settings, review layers.
-    \item \textbf{Python Engine} -- scheduling (Layer~1), clustering, routing (Layer~2), and output generation.
+    \item \textbf{Python Engine} -- rule evaluation, scheduling, stop ordering, and output generation.  No external solver or optimisation library required.
     \item \textbf{Make\,/\,Zapier} -- orchestration and automation between the above.
 \end{itemize}
 
-The Python engine consumes structured inputs and produces structured outputs; it is independently testable.
+The Python engine consumes structured inputs and produces structured outputs; it is independently testable.  Every decision it makes can be traced to a named rule and the data that triggered it.
 
 % ===================================================================
 \section*{Sets and Indices}
@@ -68,7 +70,6 @@ The Python engine consumes structured inputs and produces structured outputs; it
     \item $\mathcal{K} = \{1,\dots,K\}$ -- available vehicles.
     \item $\mathcal{D} = \{1,\dots,D\}$ -- working days in the planning week ($D \leq 5$).
     \item $\mathcal{A}$ -- set of geographic areas / zones.
-    \item For a given technician $t \in \mathcal{T}$ on day $d \in \mathcal{D}$, the \emph{cluster} of feasible jobs is $\mathcal{C}_{t,d} \subseteq \mathcal{J}$ (Section~\ref{sec:clustering}).
 \end{itemize}
 
 % ===================================================================
@@ -248,270 +249,247 @@ EX-05 & technician & T-02 & Mon & unavailable & training \\
     \item \texttt{effect\_value} -- reason or detail (e.g.\ PTO, maintenance, pre-booked job).
 \end{itemize}
 
-Exceptions are applied during data loading to compute effective availability sets $\mathcal{D}_t$ and $\mathcal{D}_k$ and are consumed by the Layer~1 eligibility pre-filter.
+Exceptions are applied during data loading to compute effective availability sets $\mathcal{D}_t$ and $\mathcal{D}_k$ and are consumed by the Phase~1 eligibility check.
 
 \subsection*{Duplicate--Address Handling}
 Jobs sharing the same address are grouped for route-shape evaluation (to avoid inflating stop density) and flagged for review. They are never silently removed.
 
 % ===================================================================
-\section*{Planning Pipeline (Two--Layer Architecture)}
+\section*{Planning Pipeline}
 \label{sec:pipeline}
 % ===================================================================
 
-The weekly planning pipeline runs the following stages in order:
+The weekly planning pipeline runs the following stages in order.
+Every stage is a deterministic function of its inputs; there is no randomness and no external solver.
 
 \begin{enumerate}
-    \item \textbf{Load \& Normalise} -- Import candidate pool, technician roster, vehicle roster, exceptions.
-    \item \textbf{Exclude} -- Remove jobs already scheduled, cancelled, urgent/manual, or in-workflow.
-    \item \textbf{Apply Weekly Exceptions} -- Compute true weekly capacity per technician--vehicle pair.
+    \item \textbf{Load \& Validate} -- Import candidate pool, technician roster, vehicle roster, exceptions.  Run input-validation checks (Section~\ref{sec:validation}).
+    \item \textbf{Exclude} -- Remove jobs already scheduled, cancelled, urgent/manual, or in-workflow.  Emit an exclusion reason code for each removed job.
+    \item \textbf{Apply Weekly Exceptions} -- Subtract PTO, maintenance, and pre-booked capacity.  Compute the effective availability sets $\mathcal{D}_t$, $\mathcal{D}_k$.
     \item \textbf{Reserve Special Routes} -- Place Radiator Runs (require V-2), NH Overnight Runs, and helper-needed routes \emph{before} normal filling.
-    \item \textbf{Layer~1: Schedule (Section~\ref{sec:scheduling})} -- Assign remaining jobs to (technician, vehicle, day) triples via the scheduling MILP.
-    \item \textbf{Layer~2: Cluster \& Route (Sections~\ref{sec:clustering}--\ref{sec:model})} -- For each (technician, vehicle, day) bundle, build a geographic cluster, then solve the intra--cluster VRP.
+    \item \textbf{Phase~1: Score \& Schedule (Section~\ref{sec:scheduling})} -- Score every remaining job; walk the sorted list and assign each job to the best eligible (technician, vehicle, day) slot, checking rules at every step.
+    \item \textbf{Phase~2: Order Stops (Section~\ref{sec:routing})} -- For each day's assigned job set, arrange stops in geographic order using a nearest-neighbour heuristic.  Verify time and distance feasibility; drop jobs that violate constraints.
     \item \textbf{Select Standby Jobs} -- Choose plausible backup jobs per route.
     \item \textbf{Compute Area Readiness} -- Derive area communication layer (\texttt{Good} / \texttt{Moderate} / \texttt{Lean}).
-    \item \textbf{Render Outputs} -- Route maps, flags, summaries, reason codes.
+    \item \textbf{Render Outputs} -- Flags, summaries, exclusion report, reason codes.
 \end{enumerate}
 
 % ===================================================================
-\section*{Layer~1: Weekly Scheduling Model (MILP)}
+\section*{Phase~1: Rules--Based Weekly Scheduling}
 \label{sec:scheduling}
 % ===================================================================
 
-The scheduling layer decides \emph{which} jobs to assign and \emph{to whom} (technician $t$, vehicle $k$, day $d$), seeking to maximise total weighted job value subject to eligibility, capacity, and workload-balance constraints.
+The scheduling phase decides \emph{which} jobs to serve and \emph{who does them, with which vehicle, on which day}.
+It uses a deterministic score-and-assign loop: no solver, no randomness, fully explainable.
 
-\subsection*{Eligibility Pre-filter}
+\subsection*{Step 1 --- Job Scoring}
 
-Define the binary parameter:
+Every candidate job $j \in \mathcal{J}$ receives a composite priority score:
 \[
-e_{j,t,k,d} =
-\begin{cases}
-1 & \text{if job $j$ may be assigned to technician $t$ with vehicle $k$ on day $d$},\\
-0 & \text{otherwise}.
-\end{cases}
+\text{score}_j \;=\; w_g \cdot \text{geo}_j \;+\; w_f \cdot \text{fair}_j \;+\; w_a \cdot \text{age}_j \;+\; w_r \cdot \text{readiness}_j
 \]
-$e_{j,t,k,d} = 1$ requires all of the following:
+where:
 \begin{itemize}
-    \item Technician $t$ is available on day $d$: $d \in \mathcal{D}_t$.
-    \item Vehicle $k$ is available on day $d$: $d \in \mathcal{D}_k$.
-    \item $\mathit{skill}_t \supseteq \text{req}(j)$: technician skills cover job requirements.
-    \item $\mathit{cap}_k \supseteq \rho_j$: vehicle capabilities cover the route type.
-    \item $\text{haversine}(y_t, x_t, \mathrm{lat}_j, \mathrm{lon}_j) \leq R$: job within cluster radius.
-    \item No prohibited technician--job pairing.
+    \item $\text{geo}_j$: geographic convenience (inverse of average distance from available technicians).
+    \item $\text{fair}_j$: fairness component (how under-served the job's area has been recently).
+    \item $\text{age}_j$: aging pressure (days since the job was created, $\alpha_j$).
+    \item $\text{readiness}_j$: area-readiness bonus (higher if the job's area is currently rated \texttt{Lean}).
 \end{itemize}
 
-\subsection*{Helper Eligibility Pre-filter}
+The four weights $(w_g, w_f, w_a, w_r)$ are set in the config file with two seasonal profiles: geography-dominant (Mar--Sep) and fairness-dominant (Oct--Feb).
+The engine selects the active profile based on the planning-week date.
 
-For two-man jobs $j \in \mathcal{J}^H$ we define a helper-eligibility parameter:
-\[
-e^H_{j,t,d} =
-\begin{cases}
-1 & \text{if technician $t$ may assist job $j$ on day $d$},\\
-0 & \text{otherwise}.
-\end{cases}
-\]
-$e^H_{j,t,d} = 1$ requires:
+Jobs are sorted by $\text{score}_j$ in descending order.  Ties are broken by $\alpha_j$ (oldest first), then by $w_j$ (highest revenue first).
+
+\subsection*{Step 2 --- Eligibility Check}
+
+For each candidate assignment of job $j$ to technician $t$, vehicle $k$, day $d$, the engine evaluates a named eligibility checklist.  The assignment is \textbf{eligible} only if \emph{every} rule passes:
+
+\medskip
+{\small
+\begin{longtable}{lp{9.5cm}}
+\toprule
+\textbf{Rule name} & \textbf{Condition} \\
+\midrule
+\texttt{TECH\_AVAILABLE}     & Technician $t$ is available on day $d$ after exceptions: $d \in \mathcal{D}_t$. \\
+\texttt{VEH\_AVAILABLE}      & Vehicle $k$ is available on day $d$ after exceptions: $d \in \mathcal{D}_k$. \\
+\texttt{SKILL\_MATCH}        & Technician skills cover job requirements: $\mathit{skill}_t \supseteq \text{req}(j)$. \\
+\texttt{VEH\_CAPABILITY}     & Vehicle capabilities cover route type: $\mathit{cap}_k \supseteq \rho_j$. \\
+\texttt{WITHIN\_RADIUS}      & Job is within cluster radius of technician depot: $\text{haversine}(y_t, x_t, \mathrm{lat}_j, \mathrm{lon}_j) \leq R$. \\
+\texttt{NOT\_PROHIBITED}     & The (technician, job) pair is not on the prohibited-pairing list. \\
+\texttt{CAPACITY\_OK}        & Adding this job would not exceed vehicle stop capacity $Q_k$ for the day. \\
+\texttt{TIME\_OK}            & Adding this job's service time $\tau_j$ would not push the day's total past $T_{\max}$ (using a conservative buffer for travel). \\
+\texttt{ONE\_VEH\_PER\_TECH} & Technician $t$ has not already been assigned a different vehicle on day $d$. \\
+\texttt{ONE\_TECH\_PER\_VEH} & Vehicle $k$ has not already been assigned to a different technician on day $d$. \\
+\bottomrule
+\end{longtable}
+}
+
+If every rule passes, the assignment is feasible.  If any rule fails, the engine records which rule failed and moves to the next candidate slot.
+
+\subsection*{Step 3 --- Slot Selection (Best-Fit Assignment)}
+
+For each job (in score order), the engine considers all eligible (technician, vehicle, day) slots and picks the \textbf{best fit} using a simple preference ranking:
+
+\begin{enumerate}
+    \item \textbf{Closest depot.} Among eligible slots, prefer the technician whose home depot is nearest to the job.
+    \item \textbf{Lightest day.} Among tied technicians, prefer the day with the least service time already assigned (this naturally balances workloads without a mathematical penalty term).
+    \item \textbf{Cheapest vehicle.} Among tied days, prefer the vehicle with the lower cost rate $c_k$.
+\end{enumerate}
+
+If no eligible slot exists, the job is \textbf{excluded} with the reason code from the first failing rule (e.g.\ \texttt{SKILL\_MISMATCH}, \texttt{CLUSTER\_RADIUS}).
+
+\subsection*{Step 4 --- Helper Assignment (Two-Man Jobs)}
+
+For every assigned job $j \in \mathcal{J}^H$ (helper-needed), the engine runs a secondary assignment pass to find a helper technician for the same day $d$:
+
+\begin{enumerate}
+    \item List all technicians $t' \neq t_{\text{primary}}$ where:
+    \begin{itemize}
+        \item $d \in \mathcal{D}_{t'}$ (available on the day).
+        \item $\mathit{skill}_{t'} \supseteq \text{req}(j)$ (skills match).
+        \item $\text{haversine}(y_{t'}, x_{t'}, \mathrm{lat}_j, \mathrm{lon}_j) \leq R$ (within reach).
+        \item Adding $\tau_j$ to $t'$'s day does not exceed $T_{\max}$.
+    \end{itemize}
+    \item Pick the helper with the lightest existing load on day $d$.
+    \item If no helper is available, un-assign the job and mark it as \texttt{HELPER\_UNAVAIL}.
+\end{enumerate}
+
+\subsection*{Step 5 --- Workload Review}
+
+After all jobs are assigned, the engine checks workload balance:
 \begin{itemize}
-    \item $d \in \mathcal{D}_t$ (technician available on that day).
-    \item $\mathit{skill}_t \supseteq \text{req}(j)$ (skills cover the job).
-    \item $\text{haversine}(y_t, x_t, \mathrm{lat}_j, \mathrm{lon}_j) \leq R$ (job within reach).
-\end{itemize}
-Note that helper eligibility is independent of vehicle assignment; the helper travels with the primary technician's vehicle.
-
-\subsection*{Decision Variables}
-\[
-y_{j,t,k,d} \in \{0,1\} \quad \forall\, j \in \mathcal{J},\; t \in \mathcal{T},\; k \in \mathcal{K},\; d \in \mathcal{D}
-\]
-$y_{j,t,k,d} = 1$ means job $j$ is assigned to technician $t$, vehicle $k$, on day $d$.
-
-\[
-y^H_{j,t,d} \in \{0,1\} \quad \forall\, j \in \mathcal{J}^H,\; t \in \mathcal{T},\; d \in \mathcal{D}
-\]
-$y^H_{j,t,d} = 1$ means technician $t$ serves as the \emph{helper} (second person) for two-man job $j$ on day $d$.
-
-\subsection*{Auxiliary Variables}
-\begin{itemize}
-    \item $L_{t,d}$: total service-time load of technician $t$ on day $d$ (continuous, $\geq 0$).
-    \item $L_{k,d}$: total service-time load of vehicle $k$ on day $d$ (continuous, $\geq 0$).
-    \item $\bar{L}$: average per-slot load across all active (technician, day) pairs (parameter computed in pre-processing or auxiliary variable).
-    \item $s^+_{t,d},\; s^-_{t,d} \geq 0$: positive/negative deviation of $L_{t,d}$ from $\bar{L}$ (for linearised uniformity).
-\end{itemize}
-
-\subsection*{Objective Function}
-
-Maximise total weighted job value minus a uniformity penalty:
-\begin{equation}
-\max \;\;
-\underbrace{\sum_{j \in \mathcal{J}} \sum_{t \in \mathcal{T}} \sum_{k \in \mathcal{K}} \sum_{d \in \mathcal{D}} w_j \, y_{j,t,k,d}}_{\text{total assigned weight}}
-\;-\;
-\underbrace{\lambda \sum_{t \in \mathcal{T}} \sum_{d \in \mathcal{D}} \bigl(s^+_{t,d} + s^-_{t,d}\bigr)}_{\text{uniformity penalty}}
-\label{eq:sched_obj}
-\end{equation}
-
-where $\lambda \geq 0$ is a tunable penalty weight (larger $\lambda$ enforces stronger balance).
-
-\subsection*{Subject to:}
-
-\begin{align}
-%-- (S1) each job assigned at most once --
-& \sum_{t \in \mathcal{T}} \sum_{k \in \mathcal{K}} \sum_{d \in \mathcal{D}} y_{j,t,k,d} \leq 1, \quad \forall\, j \in \mathcal{J}
-    && \text{(Each job assigned at most once)} \label{eq:assign_once}\\[4pt]
-%-- (S2) eligibility --
-& y_{j,t,k,d} \leq e_{j,t,k,d}, \quad \forall\, j,t,k,d
-    && \text{(Eligibility)} \label{eq:eligible}\\[4pt]
-%-- (S3) vehicle capacity per day --
-& \sum_{j \in \mathcal{J}} y_{j,t,k,d} \leq Q_k, \quad \forall\, t \in \mathcal{T},\; k \in \mathcal{K},\; d \in \mathcal{D}
-    && \text{(Vehicle capacity per day)} \label{eq:sched_cap}\\[4pt]
-%-- (S4) daily time budget --
-& \sum_{j \in \mathcal{J}} \tau_j \, y_{j,t,k,d} \leq T_{\max}, \quad \forall\, t,k,d
-    && \text{(Service-time budget; travel added in Layer~2)} \label{eq:sched_time}\\[4pt]
-%-- (S5) one vehicle per technician per day --
-& \sum_{k \in \mathcal{K}} \sum_{j \in \mathcal{J}} y_{j,t,k,d} \leq P \cdot z_{t,k,d}, \quad \forall\, t,d
-    && \text{(Link to vehicle indicator)} \label{eq:one_veh_link}\\[4pt]
-& \sum_{k \in \mathcal{K}} z_{t,k,d} \leq 1, \quad \forall\, t \in \mathcal{T},\; d \in \mathcal{D}
-    && \text{(At most one vehicle per tech per day)} \label{eq:one_veh}\\[4pt]
-& z_{t,k,d} \in \{0,1\}
-    && \label{eq:z_bin}\\[4pt]
-%-- (S6) one technician per vehicle per day --
-& \sum_{t \in \mathcal{T}} z_{t,k,d} \leq 1, \quad \forall\, k \in \mathcal{K},\; d \in \mathcal{D}
-    && \text{(At most one tech per vehicle per day)} \label{eq:one_tech}\\[4pt]
-%-- (S7) technician load definition (includes helper time) --
-& L_{t,d} = \sum_{j \in \mathcal{J}} \sum_{k \in \mathcal{K}} \tau_j \, y_{j,t,k,d} \;+\; \sum_{j \in \mathcal{J}^H} \tau_j \, y^H_{j,t,d}, \quad \forall\, t,d
-    && \text{(Technician-day load incl.\ helper)} \label{eq:tech_load}\\[4pt]
-%-- (S8) uniformity soft constraint --
-& L_{t,d} - \bar{L} = s^+_{t,d} - s^-_{t,d}, \quad \forall\, t,d
-    && \text{(Deviation from mean load)} \label{eq:uniformity}\\[4pt]
-& s^+_{t,d},\; s^-_{t,d} \geq 0
-    && \label{eq:s_nonneg}\\[6pt]
-%-- (S9) helper required for two-man jobs --
-& \sum_{t \in \mathcal{T}} y^H_{j,t,d} = \sum_{t \in \mathcal{T}} \sum_{k \in \mathcal{K}} y_{j,t,k,d}, \quad \forall\, j \in \mathcal{J}^H,\; d \in \mathcal{D}
-    && \text{(Each scheduled helper job gets one helper)} \label{eq:helper_assign}\\[4pt]
-%-- (S10) helper differs from primary technician --
-& y^H_{j,t,d} + \sum_{k \in \mathcal{K}} y_{j,t,k,d} \leq 1, \quad \forall\, j \in \mathcal{J}^H,\; t \in \mathcal{T},\; d \in \mathcal{D}
-    && \text{(Helper $\neq$ primary technician)} \label{eq:helper_diff}\\[4pt]
-%-- (S11) helper eligibility --
-& y^H_{j,t,d} \leq e^H_{j,t,d}, \quad \forall\, j \in \mathcal{J}^H,\; t \in \mathcal{T},\; d \in \mathcal{D}
-    && \text{(Helper eligibility)} \label{eq:helper_elig}
-\end{align}
-
-\paragraph{Notes.}
-\begin{itemize}
-    \item Constraint~\eqref{eq:sched_time} uses service time only (no travel); travel feasibility is enforced in Layer~2 and may cause a small fraction of scheduled jobs to be dropped during routing.
-    \item $\bar{L}$ may be fixed as $\displaystyle \bar{L} = \frac{\sum_{j} \tau_j}{|\{(t,d) : d \in \mathcal{D}_t\}|}$ (total service divided by active slots) or treated as a free variable alongside the deviations.
-    \item For vehicle-level uniformity add analogous $s^+_{k,d}, s^-_{k,d}$ terms.
+    \item Compute each technician's total weekly service time.
+    \item If any technician exceeds 90\,\% of their available hours, emit a \texttt{TECH\_OVERLOAD} flag.
+    \item If any vehicle is at 100\,\% capacity on 4+ days, emit a \texttt{VEH\_BOTTLENECK} flag.
 \end{itemize}
 
-% ===================================================================
-\section*{Layer~2: Clustering Phase}
-\label{sec:clustering}
-% ===================================================================
+No jobs are moved or swapped at this stage---the flags exist so the owner can decide whether the imbalance is acceptable.
 
-Given the Layer~1 assignment $(t, k, d) \mapsto \mathcal{J}_{t,k,d}$, the routing layer operates on each such bundle independently.  We adopt a \textbf{Cluster--first, Route--second} decomposition following the approach implemented in SW implementation.
+\subsection*{Algorithm Summary}
 
 \begin{algorithm}[H]
-\caption{Geographic Cluster Construction for Technician $t$, Day $d$}
+\caption{Rules--Based Weekly Scheduling (Phase~1)}
 \begin{algorithmic}[1]
-\Require Start location $(y_t, x_t)$, candidate jobs $\mathcal{J}$, cluster radius $R$, min cluster size $N_{\min}$, radius increment $\Delta R$, max iterations $I_{\max}$
-\Ensure Cluster $\mathcal{C}_{t,d}$
-\State $R_{\text{cur}} \gets R$
-\For{$\text{iter} = 1$ \textbf{to} $I_{\max}$}
-    \State $\mathcal{C}_{t,d} \gets \emptyset$
-    \For{each $j \in \mathcal{J}$}
-        \If{$\text{haversine}(y_t, x_t, \mathrm{lat}_j, \mathrm{lon}_j) \leq R_{\text{cur}}$
-            \textbf{and} $\text{area}(j)$ compatible
-            \textbf{and} $\text{skill}_t \supseteq \text{req}(j)$
-            \textbf{and} vehicle compatible}
-            \State $\mathcal{C}_{t,d} \gets \mathcal{C}_{t,d} \cup \{j\}$
+\Require Candidate jobs $\mathcal{J}$, technicians $\mathcal{T}$, vehicles $\mathcal{K}$, days $\mathcal{D}$, config
+\Ensure Assignments list, exclusion list, review flags
+\State Compute $\text{score}_j$ for every $j \in \mathcal{J}$
+\State Sort $\mathcal{J}$ by score descending (ties: age, then revenue)
+\For{each job $j$ in sorted order}
+    \State $\text{best\_slot} \gets \textsc{None}$
+    \For{each $(t, k, d)$ in eligible slots for $j$}
+        \State Check all 10 eligibility rules
+        \If{all rules pass \textbf{and} slot is better than $\text{best\_slot}$}
+            \State $\text{best\_slot} \gets (t, k, d)$
         \EndIf
     \EndFor
-    \If{$|\mathcal{C}_{t,d}| \geq N_{\min}$} \textbf{break}
-    \Else \hspace{1em} $R_{\text{cur}} \gets R_{\text{cur}} + \Delta R$
+    \If{$\text{best\_slot}$ found}
+        \State Assign $j \to \text{best\_slot}$; update capacity trackers
+        \If{$j \in \mathcal{J}^H$}
+            \State Run helper-assignment pass (Step~4)
+        \EndIf
+    \Else
+        \State Record exclusion: $(j, \text{first failing rule})$
     \EndIf
 \EndFor
-\State Build distance sub-matrix $d_{i,j}$ for $i,j \in \{0\} \cup \mathcal{C}_{t,d}$ using road network
+\State Run workload-review checks; emit flags
 \end{algorithmic}
 \end{algorithm}
 
-Area boundaries act as guidance, not hard walls: neighbouring areas may be mixed when geography meaningfully improves route quality.
-
-% ===================================================================
-\section*{Layer~2: Intra--Cluster Routing Model (MILP)}
-\label{sec:model}
-% ===================================================================
-
-For each cluster $\mathcal{C}_{t,d}$ produced from the jobs assigned by Layer~1, we solve an Orienteering-style VRP as a Mixed-Integer Linear Program. Let $N = |\mathcal{C}_{t,d}|$ and index the depot (technician start) as node~$0$.
-
-\subsection*{Parameters}
+\paragraph{Why this approach.}
 \begin{itemize}
-\item $N$ nodes (job locations in the cluster) forming set $W = \{1,\dots,N\}$.
-\item Depot node $0$ with distances $d_{0,i}$, $d_{i,0}$ for $i \in W$.
-\item Road--network distances $d_{i,j}$ between jobs.
-\item Cluster radius $R$ and inter-stop radius $r$ (meters).
-\item Vehicle speed $v_k$ (m/min) and cost per metre $c_k$ (\$/m) for the assigned vehicle $k$.
-\item Service time $\tau_j$ (minutes) for each job $j$.
-\item Vehicle capacity $Q_k$ -- maximum stops for vehicle $k$ ($Q_k \leq P$).
-\item Job score $w_j$ (revenue adjusted by seasonal weights).
-\item Maximum route duration $T_{\max}$ (minutes).
-\item Maximum number of stops $P$.
+    \item \textbf{Explainable:} every assignment can be traced to ``job $j$ scored $X$; slot $(t,k,d)$ was chosen because it was the closest eligible depot on the lightest day.''
+    \item \textbf{Deterministic:} same inputs always produce the same plan.
+    \item \textbf{Adjustable:} the scoring weights and the slot-preference ranking are config parameters, not hard-coded logic.
+    \item \textbf{No solver dependency:} pure Python, no Pyomo, no CBC, no external libraries beyond standard data-processing.
+    \item \textbf{Upgrade path:} if the greedy approach leaves too much value on the table, Phase~1 can be replaced with an optimisation model (MILP or constraint programming) in Version~2 without changing the rest of the pipeline.
 \end{itemize}
 
-\subsection*{Decision Variables}
-\begin{itemize}
-    \item $x_{i,j} \in \{0,1\}$: 1 if the route traverses arc $(i,j)$, $0 \leq i,j \leq N$.
-    \item $u_i \in \{0,1,\dots,P\}$: visit order (Miller--Tucker--Zemlin), $0 \leq i \leq N$.
-\end{itemize}
-
-\subsection*{Objective Function}
-
-Maximize the total weighted score minus travel cost for the route $\Omega$ using vehicle $k$:
-\[
-\max \;\; \sum_{i=0}^{N}\sum_{\substack{j=0\\j\neq i}}^{N} w_{j}\, x_{i,j} \;-\; \sum_{i=0}^{N}\sum_{\substack{j=0\\j\neq i}}^{N} c_k \cdot d_{i,j} \cdot x_{i,j}
-\]
-
-\subsection*{Subject to:}
-
-\begin{align}
-& \sum_{i=1}^{N} \sum_{\substack{j=1\\j\neq i}}^{N} x_{i,j} \leq Q_k
-    && \text{(Vehicle capacity)} \label{eq:capacity}\\[4pt]
-& \sum_{i=0}^{N}\sum_{\substack{j=0\\j\neq i}}^{N} x_{i,j}\!\left(\frac{d_{i,j}}{v_k} + \tau_{j}\right) \leq T_{\max}
-    && \text{(Daily time budget)} \label{eq:time}\\[4pt]
-& d_{0,i} \leq R,\;\; d_{i,0} \leq R, \quad i \in W
-    && \text{(Cluster radius from depot)} \label{eq:cluster}\\[4pt]
-& x_{i,i} = 0, \quad i=0,\dots,N
-    && \text{(No self-loops)} \label{eq:noloop}\\[4pt]
-& \sum_{i=0}^{N} x_{i,j} \leq 1, \quad j=0,\dots,N
-    && \text{(Enter each node at most once)} \label{eq:inonce}\\[4pt]
-& \sum_{j=0}^{N} x_{i,j} \leq 1, \quad i=0,\dots,N
-    && \text{(Leave each node at most once)} \label{eq:outonce}\\[4pt]
-& \sum_{j=1}^{N} x_{0,j} = 1
-    && \text{(Depart from depot)} \label{eq:depart}\\[4pt]
-& \sum_{i=1}^{N} x_{i,0} = 1
-    && \text{(Return to depot)} \label{eq:return}\\[4pt]
-& u_i - u_j + P\, x_{i,j} \leq P - 1,\; 1 \leq i,j \leq N
-    && \text{(MTZ subtour elimination)} \label{eq:mtz}\\[4pt]
-& \sum_{j=0}^{N} x_{i,j} = \sum_{l=0}^{N} x_{l,i}, \quad i=0,\dots,N
-    && \text{(Flow conservation)} \label{eq:flow}\\[4pt]
-& d_{i,j} \leq r \;\;\text{or}\;\; x_{i,j}=0, \quad 1\leq i,j \leq N
-    && \text{(Inter-stop distance limit)} \label{eq:interstop}
-\end{align}
-
-Constraints \eqref{eq:cluster} and \eqref{eq:interstop} are pre-processing filters: arcs violating them are removed from the feasible arc set before the solver runs, reducing the problem dimension (as done in the optimised MILP implementation).
-
 % ===================================================================
-\section*{Hard Constraints (Eligibility Layer)}
+\section*{Phase~2: Stop Ordering (Nearest--Neighbour Routing)}
+\label{sec:routing}
 % ===================================================================
 
-Before the MILP is invoked, jobs and assignments are filtered by hard constraints:
+After Phase~1 assigns jobs to (technician, vehicle, day) bundles, Phase~2 arranges the stops within each day into a drivable geographic sequence.
+Version~1 uses a simple, explainable heuristic---no VRP solver.
 
+\subsection*{Step 1 --- Build the Day's Stop List}
+
+For each (technician $t$, vehicle $k$, day $d$) bundle, collect the assigned jobs $\mathcal{J}_{t,k,d}$.
+The depot (technician start location) is node~0.
+
+\subsection*{Step 2 --- Nearest--Neighbour Sequencing}
+
+\begin{algorithm}[H]
+\caption{Nearest--Neighbour Stop Ordering}
+\begin{algorithmic}[1]
+\Require Depot $(y_t, x_t)$, assigned jobs $\mathcal{J}_{t,k,d}$, distance function $d(\cdot,\cdot)$
+\Ensure Ordered route $\Omega$
+\State $\text{current} \gets \text{depot}$
+\State $\text{remaining} \gets \mathcal{J}_{t,k,d}$
+\State $\Omega \gets [\text{depot}]$
+\While{remaining $\neq \emptyset$}
+    \State $j^* \gets \arg\min_{j \in \text{remaining}} d(\text{current}, j)$
+    \State Append $j^*$ to $\Omega$; remove $j^*$ from remaining
+    \State $\text{current} \gets j^*$
+\EndWhile
+\State Append depot to $\Omega$ \Comment{return to start}
+\end{algorithmic}
+\end{algorithm}
+
+Distances are computed via Haversine (straight-line), which is sufficient for sequencing.
+Road-network distances can be substituted without changing the algorithm.
+
+\subsection*{Step 3 --- Feasibility Verification}
+
+After sequencing, the engine walks the route and checks:
+
+\medskip
+{\small
+\begin{longtable}{lp{9cm}}
+\toprule
+\textbf{Check} & \textbf{Action if violated} \\
+\midrule
+Total travel + service time $\leq T_{\max}$ & Drop the last-added job from the route; re-check.  Dropped job gets reason code \texttt{ROUTE\_DROP}. \\
+Number of stops $\leq Q_k$ & Should not happen (enforced in Phase~1), but drop excess if it does. \\
+Inter-stop distance $\leq r$ & Flag the arc as \texttt{CROSS\_AREA}; do not drop (guidance, not hard wall). \\
+Every stop within radius $R$ of depot & Should not happen (eligibility enforced), but flag \texttt{GEOCODE\_OOB} if violated. \\
+\bottomrule
+\end{longtable}
+}
+
+If any job is dropped, the engine re-runs the nearest-neighbour on the reduced set so the sequence stays sensible.
+
+\subsection*{Why nearest-neighbour (not a solver)}
 \begin{itemize}
-    \item Job must be in the valid weekly candidate pool.
-    \item Technician must be available on the planned day (after weekly exceptions).
-    \item Vehicle must be available and capability-compatible with the route type.
-    \item Special route prerequisites must be satisfied (e.g.\ V-2 for Radiator Runs).
-    \item Helper-needed jobs require adequate staffing.
-    \item Prohibited technician--job pairings are excluded.
+    \item \textbf{Transparent:} the route order is``go to the closest un-visited stop.''  No parameter tuning, no black-box behaviour.
+    \item \textbf{Fast:} $O(n^2)$ for $n$ stops.  For typical NES clusters ($n \leq 14$), this is instantaneous.
+    \item \textbf{Good enough:} nearest-neighbour typically delivers routes within 20--25\,\% of the optimal tour length.  For Version~1 the priority is correctness and reviewability, not distance optimality.
+    \item \textbf{Upgrade path:} if route quality matters (fuel costs, tight schedules), a 2-opt improvement pass or a proper TSP/VRP solver can be added in Version~2 as a drop-in replacement.
 \end{itemize}
 
-Each exclusion is annotated with a reason code for traceability.
+% ===================================================================
+\section*{Hard Constraints Summary}
+% ===================================================================
+
+The following rules are enforced throughout the pipeline.  None may be relaxed; every violation either blocks the assignment or triggers a job exclusion with a reason code.
+
+\begin{itemize}
+    \item Job must be in the valid weekly candidate pool (\texttt{status = candidate}).
+    \item Technician must be available on the planned day (after weekly exceptions): \texttt{TECH\_AVAILABLE}.
+    \item Vehicle must be available and capability-compatible with the route type: \texttt{VEH\_AVAILABLE}, \texttt{VEH\_CAPABILITY}.
+    \item Technician skills must cover job requirements: \texttt{SKILL\_MATCH}.
+    \item Job must be within cluster radius $R$ of the technician's depot: \texttt{WITHIN\_RADIUS}.
+    \item Prohibited technician--job pairings are excluded: \texttt{NOT\_PROHIBITED}.
+    \item Vehicle stop capacity $Q_k$ must not be exceeded: \texttt{CAPACITY\_OK}.
+    \item Daily service-time budget $T_{\max}$ must not be exceeded: \texttt{TIME\_OK}.
+    \item Each technician uses at most one vehicle per day: \texttt{ONE\_VEH\_PER\_TECH}.
+    \item Each vehicle is used by at most one technician per day: \texttt{ONE\_TECH\_PER\_VEH}.
+    \item Helper-needed jobs require exactly one helper technician, different from the primary.
+    \item No job is assigned more than once.
+\end{itemize}
+
+Each constraint maps directly to a named rule in the eligibility-check table (Phase~1, Step~2) or the feasibility-verification table (Phase~2, Step~3).
 
 % ===================================================================
 \section*{Special Route Types}
@@ -520,27 +498,28 @@ Each exclusion is annotated with a reason code for traceability.
 Special routes are planned \emph{before} normal route filling to reserve capacity:
 
 \begin{enumerate}
-    \item \textbf{Radiator Runs} -- Require vehicle V-2. Clustered separately.
+    \item \textbf{Radiator Runs} -- Require vehicle V-2. Scheduled first.
     \item \textbf{NH Overnight Runs} -- Long-distance routes requiring overnight stay.
     \item \textbf{Two-Man / Helper Routes} -- Jobs flagged with $h_j = 1$; need two technicians or a helper.
 \end{enumerate}
 
-After special routes consume capacity, the remaining capacity feeds normal route construction.
+After special routes consume capacity, the remaining capacity feeds normal scheduling.
 
 % ===================================================================
-\section*{Solution Methods}
+\section*{Solution Approach}
 % ===================================================================
 
-For each cluster the engine can apply one or more of the following, matching the algorithms in the codebase:
+Version~1 uses a single, deterministic algorithm for each phase:
 
-\begin{enumerate}
-    \item \textbf{MILP} (CBC solver via Pyomo) -- exact solution for small--to--medium clusters.
-    \item \textbf{Simulated Annealing} -- metaheuristic for larger clusters; supports street-filling variant.
-    \item \textbf{Greedy Heuristic} -- fast constructive heuristic with revenue-to-distance scoring.
-    \item \textbf{Brute-Force Search} -- exhaustive enumeration for very small instances.
-\end{enumerate}
+\begin{itemize}
+    \item \textbf{Phase~1 (Scheduling):} Score--sort--assign greedy loop with 10 named eligibility rules (Section~\ref{sec:scheduling}).
+    \item \textbf{Phase~2 (Routing):} Nearest--neighbour stop ordering with post-hoc feasibility checks (Section~\ref{sec:routing}).
+\end{itemize}
 
-A time budget of 120~seconds is enforced across all methods.
+No external solver, optimisation library, or metaheuristic is required.
+The engine completes a full weekly plan for the current fleet size (30 jobs, 4 technicians, 5 vehicles, 5 days) in under one second on commodity hardware.
+
+If route quality improvements are needed in a future version, a 2-opt improvement pass or a TSP/VRP solver can be introduced as a drop-in replacement for the nearest-neighbour step without changing the rest of the pipeline.
 
 % ===================================================================
 \section*{Standby Job Selection}
@@ -564,7 +543,7 @@ based on the density and quality of planned activity in that area. This is a com
 \section*{Post-Route Update Rule}
 % ===================================================================
 
-After a weekly plan is finalised and approved, assigned jobs $j$ with $\sum_{i} x_{i,j} = 1$ are removed from the candidate pool for subsequent planning iterations.
+After a weekly plan is finalised and approved, assigned jobs are marked as \texttt{scheduled} and removed from the candidate pool for subsequent planning iterations.
 
 % ===================================================================
 \section*{Output Artefacts}
@@ -586,11 +565,7 @@ Outputs are designed for human review by a non-technical owner; the engine does 
 \section*{Owner--Controlled Policy Inputs}
 % ===================================================================
 
-The optimisation engine exposes a compact set of tunable parameters that a non-technical business owner can adjust--via Airtable fields or a configuration file--to steer planning behaviour without modifying code.
-
-\paragraph{Workload-balance weight ($\lambda$).}
-Controls the trade-off between maximising total job value and equalising daily loads across technicians (Eq.~\ref{eq:sched_obj}).
-Setting $\lambda = 0$ yields a pure value-maximising schedule; increasing $\lambda$ smooths the workload at the cost of potentially leaving some lower-value jobs unassigned.
+The engine exposes a compact set of tunable parameters that a non-technical business owner can adjust---via Airtable fields or a configuration file---to steer planning behaviour without modifying code.
 
 \paragraph{Maximum daily route duration ($T_{\max}$).}
 Caps the total travel-plus-service time for any single route.
@@ -610,7 +585,7 @@ The owner sets two seasonal profiles; the engine selects the active profile base
 
 \paragraph{Weekly exceptions.}
 Technician and vehicle unavailability entries (PTO, maintenance, pre-booked installs) entered each week.
-These directly shrink the effective capacity seen by Layer~1 and must be finalised before the planning run.
+These directly shrink the effective capacity seen by Phase~1 and must be finalised before the planning run.
 
 \paragraph{Special-route reservations.}
 The owner marks which jobs require Radiator Run (V-2), NH Overnight, or helper-needed handling.
@@ -624,19 +599,20 @@ Changes take effect on the next planning run without engine modification.
 \section*{Major Risks and Ambiguities}
 % ===================================================================
 
-\paragraph{Layer-1 / Layer-2 feasibility gap.}
-The scheduling MILP (Layer~1) budgets service time only (Eq.~\ref{eq:sched_time}); it does not account for travel time between stops.
-Consequently, some bundles passed to Layer~2 may exceed $T_{\max}$ once routing distances are added, forcing jobs to be dropped at the routing stage.
-Until an iterative Layer-1\,/\,Layer-2 feedback loop is implemented, a conservative $T_{\max}$ buffer (e.g.\ 80\,\% of the true day length) should be used in Layer~1.
+\paragraph{Phase-1 / Phase-2 feasibility gap.}
+Phase~1 budgets service time only; it does not account for travel time between stops.
+Consequently, some bundles passed to Phase~2 may exceed $T_{\max}$ once driving distances are added, forcing jobs to be dropped at the routing stage.
+A conservative $T_{\max}$ buffer (e.g.\ 80\,\% of the true day length) should be used in Phase~1 scoring until an iterative feedback loop is added.
 
 \paragraph{Distance-matrix quality.}
 Road-network distances are computed via OSMnx/NetworkX, with a Haversine fallback when no path exists.
 If the underlying OpenStreetMap data is incomplete or stale for rural New England roads, route durations may be under- or over-estimated.
 Periodic comparison with Google Maps drive-time queries is recommended.
 
-\paragraph{Solver scalability.}
-The Layer~1 MILP has $|\mathcal{J}| \times |\mathcal{T}| \times |\mathcal{K}| \times |\mathcal{D}|$ binary variables.
-For the current fleet (30 jobs, 4 technicians, 5 vehicles, 5 days = 3\,000 variables) the problem is tractable, but scaling to 200+ jobs or 10+ technicians may require solver time-limits, column generation, or a decomposition heuristic.
+\paragraph{Greedy scheduling quality.}
+The score--sort--assign loop is deterministic but greedy: it processes jobs in priority order and cannot backtrack.
+A high-priority job may consume a slot that would have been better used by two medium-priority jobs.
+Monitoring the fraction of unassigned jobs and the fill-rate variance across technicians will reveal whether the greedy strategy needs iterative improvement (e.g.\ swap passes) in a future version.
 
 \paragraph{Geocoding accuracy.}
 Job coordinates originate from ServiceM8 address geocoding.
@@ -652,12 +628,12 @@ The scoring weights $(w_g, w_f, w_a, w_r)$ are currently set by judgement rather
 Until job-outcome data is available for back-testing, the weights should be reviewed periodically and adjusted if dispatchers consistently override engine recommendations.
 
 \paragraph{Helper-job coordination.}
-Two-man jobs ($h_j = 1$) are now modelled explicitly in Layer~1 via the helper variable $y^H_{j,t,d}$ and constraints \eqref{eq:helper_assign}--\eqref{eq:helper_elig}.
+Two-man jobs ($h_j = 1$) are assigned a helper in Phase~1, Step~4.
 However, the model assumes the helper travels with the primary technician's vehicle and does not account for the helper's own travel time to the job site.
 If helpers must drive separately, an additional travel-feasibility check is needed.
 
 \paragraph{Single-week planning horizon.}
-Each run optimises one week in isolation.
+Each run plans one week in isolation.
 Jobs deferred this week re-enter the pool next week with a higher age score, but there is no explicit multi-week look-ahead to prevent systematic starvation of low-value areas.
 
 % ===================================================================
@@ -666,6 +642,7 @@ Jobs deferred this week re-enter the pool next week with a higher age score, but
 % ===================================================================
 
 The Python engine is organised as a pipeline of self-contained stages, each with explicit inputs, outputs, and a single responsibility.
+No external solver or optimisation library is required.
 The recommended package layout is:
 
 \begin{verbatim}
@@ -675,17 +652,15 @@ nes_dispatch/
         loaders.py          # CSV / Airtable readers -> dataclasses
         models.py           # Job, Technician, Vehicle, WeeklyException, WeeklyData
         validators.py       # Pre-run sanity checks (coordinates, missing fields)
-    scheduling/
-        eligibility.py      # Build e_{j,t,k,d} and e^H_{j,t,d} matrices
-        milp.py             # Pyomo Layer-1 MILP (solve_scheduling)
-        greedy.py           # Greedy fallback scheduler
+    rules/
+        scoring.py          # Composite priority-score formula
+        eligibility.py      # 10 named eligibility rules -> pass/fail per slot
+        slot_selection.py   # Best-fit ranking (closest depot, lightest day, cheapest vehicle)
+        helpers.py          # Helper-assignment secondary pass
+        workload.py         # Workload-review flags (no job movement)
     routing/
-        clustering.py       # Geographic cluster construction (Algorithm 1)
-        distance.py         # OSMnx / Haversine distance matrix builder
-        milp.py             # Pyomo Layer-2 routing MILP
-        sa.py               # Simulated Annealing solver
-        greedy.py           # Constructive greedy heuristic
-        bfs.py              # Brute-force / branch-and-bound
+        distance.py         # OSMnx / Haversine distance computation
+        nearest_neighbour.py# NN stop ordering + feasibility verification
     postprocess/
         standby.py          # Standby job ranking
         readiness.py        # Area readiness computation
@@ -698,8 +673,8 @@ nes_dispatch/
 \begin{enumerate}
     \item \textbf{Stateless stages.} Each stage is a pure function: it receives typed dataclass inputs and returns typed outputs. No global mutable state.
     \item \textbf{Fail-fast validation.} \texttt{validators.py} runs before the pipeline and rejects runs with missing columns, out-of-bounds coordinates, or conflicting exceptions. Errors are collected, not thrown one at a time.
-    \item \textbf{Solver-agnostic interface.} Both \texttt{scheduling/milp.py} and \texttt{routing/milp.py} expose the same \texttt{solve(data, config) -> Result} signature. If Pyomo/CBC is unavailable, \texttt{pipeline.py} falls back to the greedy variant without code changes.
-    \item \textbf{Idempotent runs.} Given the same inputs and config, the engine produces identical outputs. Random seeds for SA are drawn from the config file.
+    \item \textbf{Named rules.} Every scheduling decision is traceable to a named rule (e.g.\ \texttt{SKILL\_MATCH}, \texttt{CAPACITY\_OK}) and the inputs that triggered it. No opaque scoring or black-box behaviour.
+    \item \textbf{Idempotent runs.} Given the same inputs and config, the engine produces identical outputs. The algorithm is fully deterministic---no random seeds, no stochastic components.
     \item \textbf{Separation of I/O.} File reads, API calls, and map rendering live in \texttt{data/loaders.py} and \texttt{postprocess/output.py}. Core logic never touches the filesystem directly.
 \end{enumerate}
 
@@ -711,7 +686,7 @@ Each stage logs its runtime and emits a structured summary (JSON) so that failur
 Unit tests cover individual stages with small synthetic fixtures.
 An integration test runs the full pipeline on the example CSVs and asserts that:
 \begin{itemize}
-    \item every assigned job satisfies eligibility;
+    \item every assigned job satisfies all 10 eligibility rules;
     \item no technician exceeds $T_{\max}$;
     \item helper jobs have exactly one primary and one distinct helper;
     \item output files are generated without errors.
@@ -731,21 +706,18 @@ The following table defines which concerns live in Python source, which in a ver
 \toprule
 \textbf{Concern} & \textbf{Code} & \textbf{Config} & \textbf{Airtable} \\
 \midrule
-MILP formulation \& solver logic              & $\bullet$ &           &           \\
-Clustering algorithm                          & $\bullet$ &           &           \\
-SA / Greedy / BFS heuristics                  & $\bullet$ &           &           \\
-Distance-matrix computation                   & $\bullet$ &           &           \\
+Rule-based scheduling logic                   & $\bullet$ &           &           \\
+Nearest-neighbour routing                     & $\bullet$ &           &           \\
+Eligibility-check rules                       & $\bullet$ &           &           \\
+Distance computation                          & $\bullet$ &           &           \\
 Output rendering (maps, text)                 & $\bullet$ &           &           \\
 \midrule
-$\lambda$ (uniformity weight)                 &           & $\bullet$ &           \\
 $T_{\max}$ (daily time budget)                &           & $\bullet$ &           \\
 $P$ (global max stops)                        &           & $\bullet$ &           \\
 $R$ (cluster radius)                          &           & $\bullet$ &           \\
 $r$ (inter-stop radius)                       &           & $\bullet$ &           \\
 Seasonal weight profiles $(w_g,w_f,w_a,w_r)$  &           & $\bullet$ &           \\
-Solver time-out (seconds)                     &           & $\bullet$ &           \\
-SA hyper-parameters ($T_{\text{start}}, \alpha, K$) &     & $\bullet$ &           \\
-Random seed                                   &           & $\bullet$ &           \\
+Workload-review thresholds                    &           & $\bullet$ &           \\
 \midrule
 Vehicle roster \& capability tags             &           &           & $\bullet$ \\
 Vehicle availability days                     &           &           & $\bullet$ \\
@@ -801,31 +773,28 @@ Correctness is enforced at three levels: input validation (before the pipeline r
     \item \textbf{Config schema.} The JSON/YAML config is validated against a schema: all numerical parameters are present, positive, and within documented bounds (e.g.\ $0 \leq \lambda \leq 10\,000$, $R > 0$).
 \end{enumerate}
 
-\subsection*{Post-Layer Constraint Verification}
+\subsection*{Post-Phase Constraint Verification}
 
-After Layer~1 and Layer~2 each complete, the engine runs an assertion suite on the solution before proceeding.
+After Phase~1 and Phase~2 each complete, the engine runs an assertion suite on the solution before proceeding.
 
-\paragraph{Layer~1 assertions.}
+\paragraph{Phase~1 assertions.}
 \begin{itemize}
-    \item Every assigned job appears at most once across all (technician, vehicle, day) triples: $\sum_{t,k,d} y_{j,t,k,d} \leq 1$.
-    \item Eligibility is respected: $y_{j,t,k,d} = 1 \Rightarrow e_{j,t,k,d} = 1$.
-    \item Vehicle capacity is satisfied per slot: $\sum_j y_{j,t,k,d} \leq Q_k$.
-    \item Service-time budget holds: $\sum_j \tau_j y_{j,t,k,d} \leq T_{\max}$.
-    \item Each technician uses at most one vehicle per day: $\sum_k z_{t,k,d} \leq 1$.
-    \item Each vehicle is used by at most one technician per day: $\sum_t z_{t,k,d} \leq 1$.
-    \item Every helper job ($j \in \mathcal{J}^H$) that is assigned has exactly one helper: $\sum_t y^H_{j,t,d} = 1$ when $\sum_{t,k} y_{j,t,k,d} = 1$.
-    \item The helper technician differs from the primary: $y^H_{j,t,d} + \sum_k y_{j,t,k,d} \leq 1$ for all $t$.
+    \item Every assigned job appears at most once across all (technician, vehicle, day) triples.
+    \item All 10 eligibility rules pass for every assignment.
+    \item Vehicle capacity is satisfied per slot: assigned jobs $\leq Q_k$.
+    \item Service-time budget holds: total service time $\leq T_{\max}$ per slot.
+    \item Each technician uses at most one vehicle per day.
+    \item Each vehicle is used by at most one technician per day.
+    \item Every helper job that is assigned has exactly one helper technician, different from the primary.
 \end{itemize}
 
-\paragraph{Layer~2 assertions (per route).}
+\paragraph{Phase~2 assertions (per route).}
 \begin{itemize}
-    \item Route departs from and returns to the depot (node~0).
-    \item No node is visited more than once.
-    \item Flow conservation holds at every node: in-degree equals out-degree.
+    \item Route departs from and returns to the depot.
+    \item No stop is visited more than once.
     \item Total travel-plus-service time $\leq T_{\max}$.
     \item Number of visited stops $\leq Q_k$.
-    \item No arc violates the inter-stop limit $r$.
-    \item All visited nodes lie within cluster radius $R$ of the depot.
+    \item All stops lie within radius $R$ of the depot.
 \end{itemize}
 
 If any assertion fails, the pipeline logs the violation, marks the affected route as \texttt{INFEASIBLE}, and continues with the remaining bundles rather than aborting the entire run.
@@ -835,11 +804,11 @@ If any assertion fails, the pipeline logs the violation, marks the affected rout
 \paragraph{Unit tests.}
 Each module exposes pure functions that can be tested in isolation:
 \begin{itemize}
-    \item \texttt{test\_eligibility}: synthetic 3-job, 2-tech, 2-vehicle scenario; verify $e_{j,t,k,d}$ matrix matches hand-computed values.
-    \item \texttt{test\_scheduling\_milp}: small instance where the optimal assignment is known; compare solver output to expected.
-    \item \texttt{test\_clustering}: verify cluster membership given a fixed radius and technician location.
-    \item \texttt{test\_routing\_milp}: 4-node instance with known optimal tour; compare objective and route.
-    \item \texttt{test\_sa}: seeded SA run on the same 4-node instance; verify feasibility and non-regression of objective.
+    \item \texttt{test\_scoring}: synthetic 5-job scenario; verify composite scores match hand-computed values.
+    \item \texttt{test\_eligibility}: 3-job, 2-tech, 2-vehicle scenario; verify each of the 10 named rules returns the expected pass/fail.
+    \item \texttt{test\_slot\_selection}: given pre-computed eligibility, verify best-fit ranking (closest depot $\to$ lightest day $\to$ cheapest vehicle).
+    \item \texttt{test\_nearest\_neighbour}: 5-node instance with known optimal NN tour; compare output sequence.
+    \item \texttt{test\_feasibility}: route deliberately exceeding $T_{\max}$; verify job-drop and re-sequence logic.
     \item \texttt{test\_helper}: 2-tech, 1 helper job; confirm that exactly one helper is assigned and differs from the primary.
 \end{itemize}
 
@@ -848,13 +817,13 @@ A single end-to-end test runs the full pipeline on the example CSVs (\texttt{dat
 \begin{itemize}
     \item no validation errors;
     \item at least one route is generated;
-    \item all post-layer assertions pass;
+    \item all post-phase assertions pass;
     \item output files (maps, summaries, reason codes) are created and non-empty.
 \end{itemize}
 
 \paragraph{Golden-file comparison.}
-For deterministic runs (MILP-only, or SA with a fixed seed), the integration test compares output against a checked-in golden file.
-A mismatch triggers a diff report so that unintended behavioural changes are caught immediately.
+Because the engine is fully deterministic (no random components), every run on the same inputs produces identical outputs.
+The integration test compares output against a checked-in golden file; a mismatch triggers a diff report so that unintended behavioural changes are caught immediately.
 
 % ===================================================================
 \section*{Review Flags and Exception Outputs}
@@ -880,10 +849,10 @@ Each flag has a severity (\texttt{INFO}, \texttt{WARN}, \texttt{CRITICAL}), a sh
 \texttt{VEH\_BOTTLENECK} & WARN  & A vehicle is assigned at 100\,\% capacity on 4+ days. Little room for ad-hoc or emergency jobs. \\
 \texttt{TECH\_OVERLOAD} & WARN   & A technician's total weekly service time exceeds 90\,\% of their available hours. \\
 \texttt{HELPER\_TRAVEL} & WARN   & The helper technician's home depot is more than $R$ metres from the primary technician's depot. Travel time may be underestimated. \\
-\texttt{ROUTE\_DROP}  & WARN     & One or more Layer-1-scheduled jobs were dropped during Layer-2 routing because travel time pushed the route past $T_{\max}$. \\
+\texttt{ROUTE\_DROP}  & WARN     & One or more Phase-1-scheduled jobs were dropped during Phase~2 routing because travel time pushed the route past $T_{\max}$. \\
 \texttt{GEOCODE\_OOB} & CRITICAL & A job's coordinates fall outside the New England bounding box. Likely a geocoding error; the job is excluded and must be corrected. \\
-\texttt{NO\_FEASIBLE} & CRITICAL & A (technician, vehicle, day) bundle produced by Layer~1 has no feasible route at all in Layer~2. The entire bundle is unserved. \\
-\texttt{SOLVER\_TIMEOUT} & WARN  & A solver (MILP or SA) hit its time limit before proving optimality. The returned solution is feasible but may not be optimal. \\
+\texttt{NO\_FEASIBLE} & CRITICAL & A (technician, vehicle, day) bundle produced by Phase~1 has no feasible route at all in Phase~2. The entire bundle is unserved. \\
+\texttt{SOLVER\_TIMEOUT} & \multicolumn{2}{p{8.5cm}}{\emph{Removed in Version~1---no solver is used.  Reserved for future Version~2 if a TSP/VRP solver is introduced.}} \\
 \bottomrule
 \end{longtable}
 }
@@ -901,7 +870,7 @@ This report is the primary traceability artefact.
 \midrule
 \texttt{ALREADY\_ASSIGNED}   & Job was assigned in a prior run and has not been reset. \\
 \texttt{STATUS\_EXCLUDED}    & Job status is \texttt{excluded} or \texttt{cancelled} in ServiceM8. \\
-\texttt{NO\_ELIGIBLE\_TRIPLE}& No (technician, vehicle, day) triple satisfies all eligibility conditions ($e_{j,t,k,d} = 0$ everywhere). \\
+\texttt{NO\_ELIGIBLE\_TRIPLE}& No (technician, vehicle, day) triple satisfies all 10 eligibility rules. \\
 \texttt{CAPACITY\_FULL}      & All eligible slots were already at vehicle capacity $Q_k$. \\
 \texttt{TIME\_BUDGET}        & Including this job would exceed the service-time budget $T_{\max}$ in every eligible slot. \\
 \texttt{CLUSTER\_RADIUS}     & Job is outside the cluster radius $R$ from every available technician's depot. \\
@@ -909,7 +878,7 @@ This report is the primary traceability artefact.
 \texttt{VEHICLE\_MISMATCH}   & No available vehicle has the required capability tags (e.g.\ radiator job but V-2 unavailable). \\
 \texttt{HELPER\_UNAVAIL}     & Job requires a helper ($h_j = 1$) but no second technician is eligible on any feasible day. \\
 \texttt{PROHIBITED\_PAIR}    & All eligible technicians are on the prohibited-pairing list for this job. \\
-\texttt{ROUTE\_DROP}         & Job was scheduled by Layer~1 but dropped during Layer~2 routing due to travel-time infeasibility. \\
+\texttt{ROUTE\_DROP}         & Job was scheduled by Phase~1 but dropped during Phase~2 routing due to travel-time infeasibility. \\
 \bottomrule
 \end{longtable}
 }
@@ -927,157 +896,20 @@ Both files are included in the review packet sent to the owner alongside route m
 \texttt{CRITICAL} flags are additionally surfaced as bold-red banners at the top of the summary output, ensuring they are not overlooked.
 
 % ===================================================================
-\section*{Future Considerations}
+\section*{Future Considerations (Version~2 and Beyond)}
 % ===================================================================
 
 \begin{itemize}
-    \item Iterative feedback loop between Layer~1 and Layer~2 (re-schedule infeasible bundles).
-    \item Exact stop sequencing and appointment--time optimization (Version~2).
-    \item Integration with real-time traffic and drive-time APIs.
-    \item Historical job-success and no-show rates to refine scoring weights.
-    \item Multi-week rolling horizon planning.
-    \item Machine-learning--assisted demand forecasting for proactive area readiness.
+    \item \textbf{Iterative Phase-1/Phase-2 feedback:} re-schedule jobs dropped by Phase~2 into alternative slots.
+    \item \textbf{2-opt improvement pass:} after nearest-neighbour sequencing, apply pairwise arc swaps to shorten routes.  Low complexity, high payoff.
+    \item \textbf{TSP/VRP solver (optional upgrade):} replace the nearest-neighbour step with a proper solver (e.g.\ OR-Tools, Pyomo/CBC) for provably optimal stop ordering.  The rest of the pipeline remains unchanged.
+    \item \textbf{MILP scheduling (optional upgrade):} if the greedy scheduler proves too limited, formulate Phase~1 as a mixed-integer program.  The named rules become solver constraints; the upgrade is additive, not a rewrite.
+    \item \textbf{Exact appointment-time optimisation:} assign specific arrival windows per stop once route ordering is reliable.
+    \item \textbf{Real-time traffic / drive-time API integration:} replace Haversine or OSMnx distances with live data.
+    \item \textbf{Historical job-outcome data:} feed completion rates and no-show rates back into the scoring formula.
+    \item \textbf{Multi-week rolling horizon planning:} prevent systematic starvation of low-value areas.
+    \item \textbf{ML-assisted demand forecasting:} proactive area readiness based on predicted job volume.
 \end{itemize}
-
-\section*{ SW solution considerations}
-
-The reading of the input (data.txt):  
-\begin{itemize}
-\item 
-Parses the data file (handling the comma-decimal format in numbers).
-\item Converts latitude and longitude to float.
-\item  Uses the Google Maps Distance Matrix API or OSMnx's package to compute the matrix \(d_{i,j}\) of real-world driving distances between all pairs of locations.
-\end{itemize}
-
-Get the starting location and calculate the checkpoints inside the corresponding clusters.
-
-For each of the transport type (for now it is Foot and Car) calculate distances (meters) as time(minutes) between checkpoints and between starting locations and checkpoints.
-
-Approaches to find the best routes:
-\begin{itemize}
-    \item Use dynamic programming approach (Bellman-Ford type) to find the max revenue trip
-    \item Use brute-force with branch-and-bound for every possible set (using some heuristics)
-    \item Solve MILP Optimization problem mentioned
-    \item Use Simulated Annealing approach
-    \item Heuristics
-\end{itemize}
-
-The resulting solution route is displayed on the map.
-
-\section*{Finding the best route}
-
-\subsection*{MILP Optimization problem}
-
-We can directly solve the described optimization problem using packages like Pyomo with open solvers (for example, CBC or GLPK).
-
-The overall worst-case number of variables is \(N*N + N = N(N+1)\), where \(N\) is within \(100-3300\), so the order of the number of variables is \(100000 =10^5\), looks like it is too large even for commercial solvers.
-
-However, we may note that we don't have to use the whole set of checkpoints, but only those that are situated within the maximum zone distance radius. For file data.txt, we have that each such zone gives only at max 100 checkpoints. Therefore, we have an order of $10^3$ of variables that is realistic to solve with open solvers.
-
-\subsection*{Heuristics}
-
-The possible approach for heuristic is the following: from the starting location we list the points within accessing radius, and sort them by the value of revenue of the point minus the cost of the way to it. We select the maximal value for this sorting and choose is as the first nexus (route). 
-
-After this, we start from this selected point and select new route with the same sorting, always considering that new checkpoint must be inside accessing radius for the start and the current point.
-
-We continue until we either have \(P\) checkpoints selected or we cannot find the point where time for the whole route is less than \(T_{max}\).
-
-
-\subsection*{Brute-force branch-and-bound}
-
-We implement the BFS approach: 
-
-For the starting point we calculate for all accessible checkpoints the price of it as the value of revenue of the point minus the cost of the way to it, as well as the time to reach this points. These points are put in the queue. Then, as in BFS we took those points from the queue and calculate again the corresponding neighbors (that are not already in the routes) and store them in the queue. 
-
-We proceed with this procedure until we either get P length route or the total time constraint cannot be satisfied.  
-
-Also, we use branch and bound approach. As far as we get heuristics solution and starting minima value we reject options where the revenue be certainly less than already calculated.
-
-The overall complexity/memory of this approach is \(O(N^P)\),where \(N\) is the number of nodes in accessible zone, i.e. we have \(100^{14}=10^{28}\).
-
-\subsection*{Simulated annealing}
-
-
-Simulated Annealing (SA) is a metaheuristic inspired by the annealing process in metallurgy. It is suitable for combinatorial optimization problems such as our inspection routing task, where the objective is to select and order at most $P$ nodes to maximize revenue while satisfying time, distance, and capacity constraints.
-
-\subsubsection*{Key Concepts}
-
-\begin{itemize}
-    \item \textbf{State:} A feasible inspection route starting and ending at node $0$, visiting a subset of nodes $\Omega \subseteq \{1, \ldots, N\}$.
-    \item \textbf{Objective Function:}
-    \[
-    \max\left( \sum_{i=0}^{N}\sum_{j=0}^{N} w_{i} x_{i,j} - \sum_{i=0}^{N}\sum_{j=0}^{N} c_k \cdot d_{i,j} \cdot x_{i,j} \right)
-    \]
-    \item \textbf{Constraints:} Each candidate route must satisfy the vehicle capacity limit $|\Omega| \leq Q_k$, total time limit $T_{\text{max}}$, and local and global distance constraints.
-    \item \textbf{Temperature:} Controls the acceptance of worse solutions to escape local minima.
-    \item \textbf{Cooling schedule:} Determines how temperature decreases over time.
-\end{itemize}
-
-\subsubsection*{Neighborhood Operations}
-
-To explore the solution space, we define several perturbation operators:
-
-\begin{itemize}
-    \item \textbf{Node Insertion:} Randomly insert a new node $j \notin \Omega$ into the current route at a random position, if it satisfies constraints.
-    \item \textbf{Node Deletion:} Randomly remove a node $j \in \Omega$, except the start node.
-    \item \textbf{Node Swap:} Swap two nodes $i, j \in \Omega$, modifying the order of visits.
-    \item \textbf{External Swap:} Replace a node $i \in \Omega$ with another node $j \notin \Omega$.
-    \item \textbf{2-opt Flip:} Reverse a subsegment of the route to reduce total distance.
-\end{itemize}
-
-\subsubsection*{Simulated Annealing Algorithm}
-
-\begin{algorithm}[H]
-\caption{Simulated Annealing for Inspection Routing}
-\begin{algorithmic}[1]
-\State Initialize route $\Omega_0$ with feasible nodes
-\State $T \gets T_{\text{start}},\ T_{\text{end}} \gets$ final temperature
-\While{$T > T_{\text{end}}$}
-    \For{$k = 1$ to $K$ (inner loop)}
-        \State $r_{\text{new}} \gets$ apply a random neighbor operation to $\Omega$
-        \If{$r_{\text{new}}$ is feasible}
-            \State $\Delta \gets \text{Objective}(r_{\text{new}}) - \text{Objective}(\Omega)$
-            \If{$\Delta > 0$}
-                \State Accept new route
-            \ElsIf{$\exp\left(\frac{\Delta}{T}\right) > \text{random}(0,1)$}
-                \State Accept new route with probability
-            \EndIf
-        \EndIf
-    \EndFor
-    \State $T \gets \alpha T$ \Comment{Cooling: $\alpha \in (0,1)$}
-\EndWhile
-\end{algorithmic}
-\end{algorithm}
-
-\subsubsection*{Feasibility Check}
-
-Every new route $\Omega'$ generated during neighborhood exploration is accepted only if:
-\begin{itemize}
-    \item The number of nodes visited does not exceed $Q_k$.
-    \item The total travel and service time is within $T_{\text{max}}$:
-    \[
-    \sum_{(i,j) \in \Omega'} \frac{d_{i,j}}{v_k} + \tau_j \leq T_{\text{max}}
-    \]
-    \item The distances $d_{0,j} \leq R$ for entering and exiting the cluster.
-    \item The step distances $d_{i,j} \leq r$ between consecutive visits.
-\end{itemize}
-
-\subsubsection*{Advantages}
-
-Simulated Annealing avoids local optima by probabilistically accepting worse solutions during early stages. With well-chosen operators and cooling schedules, SA efficiently explores complex route spaces.
-
-\subsubsection*{Implementation Notes}
-
-\begin{itemize}
-    \item The initial solution can be constructed greedily by selecting the $P$ nodes with highest $(w_i - c \cdot d_{0i})$ ratios.
-    \item Use a priority queue or randomized selection for neighbor generation.
-    \item Recompute route cost incrementally where possible to improve efficiency.
-\end{itemize}
-
-
-
-
-
 
 
 \end{document}
