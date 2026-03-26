@@ -22,19 +22,19 @@
 % ===================================================================
 
 New England SteamWorks (NES) dispatches multiple technicians with service vehicles to perform maintenance jobs across a wide geographic region every week.
-The planning engine follows a \textbf{rules--first} approach: every scheduling and routing decision is driven by explicit, named business rules rather than opaque numerical optimisation.
+The planning engine follows a \textbf{rules--first} approach.
 The weekly planning task proceeds in two deterministic phases:
 
 \begin{enumerate}
-    \item \textbf{Phase~1 --- Weekly Scheduling:} Score each candidate job, then assign jobs to (technician, vehicle, day) slots by walking down a priority--sorted list and checking eligibility and capacity rules one by one.
-    \item \textbf{Phase~2 --- Daily Stop Ordering:} For each day's assigned job set, arrange stops in a sensible geographic sequence using a nearest--neighbour heuristic.
+    \item \textbf{Phase~1: Weekly Scheduling:} Score each candidate job, then assign jobs to (technician, vehicle, day) slots by walking down a priority--sorted list and checking eligibility and capacity rules one by one.
+    \item \textbf{Phase~2: Daily Stop Ordering:} For each day's assigned job set, arrange stops in a sensible geographic sequence using a nearest--neighbour heuristic.
 \end{enumerate}
 
 The engine must:
 \begin{itemize}
     \item Serve as many high--value jobs as possible each week, respecting all business rules;
     \item Produce compact, drivable daily routes;
-    \item Make every decision explainable---traceable to a named rule and its inputs;
+    \item Make every decision explainable--traceable to a named rule and its inputs;
     \item Produce reviewable route/day proposals (not direct calendar writes).
 \end{itemize}
 
@@ -44,7 +44,7 @@ The engine must:
 \begin{itemize}
     \item \textbf{Primary goal:} Serve as many high--priority jobs as possible each week (priority = revenue + aging pressure + seasonal fairness).
     \item \textbf{Secondary goals:} Keep daily workloads roughly even across technicians; keep routes geographically compact; maintain area readiness for customer communication.
-    \item \textbf{Non--goal for Version~1:} Mathematical optimality. The engine should produce \emph{good, explainable} plans---not provably optimal ones.
+    \item \textbf{Non--goal for Version~1:} Mathematical optimality. The engine should produce \emph{good, explainable} plans--not provably optimal ones.
 \end{itemize}
 
 % ===================================================================
@@ -282,7 +282,7 @@ Every stage is a deterministic function of its inputs; there is no randomness an
 The scheduling phase decides \emph{which} jobs to serve and \emph{who does them, with which vehicle, on which day}.
 It uses a deterministic score-and-assign loop: no solver, no randomness, fully explainable.
 
-\subsection*{Step 1 --- Job Scoring}
+\subsection*{Step 1 -- Job Scoring}
 
 Every candidate job $j \in \mathcal{J}$ receives a composite priority score:
 \[
@@ -301,7 +301,7 @@ The engine selects the active profile based on the planning-week date.
 
 Jobs are sorted by $\text{score}_j$ in descending order.  Ties are broken by $\alpha_j$ (oldest first), then by $w_j$ (highest revenue first).
 
-\subsection*{Step 2 --- Eligibility Check}
+\subsection*{Step 2 -- Eligibility Check}
 
 For each candidate assignment of job $j$ to technician $t$, vehicle $k$, day $d$, the engine evaluates a named eligibility checklist.  The assignment is \textbf{eligible} only if \emph{every} rule passes:
 
@@ -327,7 +327,7 @@ For each candidate assignment of job $j$ to technician $t$, vehicle $k$, day $d$
 
 If every rule passes, the assignment is feasible.  If any rule fails, the engine records which rule failed and moves to the next candidate slot.
 
-\subsection*{Step 3 --- Slot Selection (Best-Fit Assignment)}
+\subsection*{Step 3 -- Slot Selection (Best-Fit Assignment)}
 
 For each job (in score order), the engine considers all eligible (technician, vehicle, day) slots and picks the \textbf{best fit} using a simple preference ranking:
 
@@ -339,7 +339,7 @@ For each job (in score order), the engine considers all eligible (technician, ve
 
 If no eligible slot exists, the job is \textbf{excluded} with the reason code from the first failing rule (e.g.\ \texttt{SKILL\_MISMATCH}, \texttt{CLUSTER\_RADIUS}).
 
-\subsection*{Step 4 --- Helper Assignment (Two-Man Jobs)}
+\subsection*{Step 4 -- Helper Assignment (Two-Man Jobs)}
 
 For every assigned job $j \in \mathcal{J}^H$ (helper-needed), the engine runs a secondary assignment pass to find a helper technician for the same day $d$:
 
@@ -355,7 +355,7 @@ For every assigned job $j \in \mathcal{J}^H$ (helper-needed), the engine runs a 
     \item If no helper is available, un-assign the job and mark it as \texttt{HELPER\_UNAVAIL}.
 \end{enumerate}
 
-\subsection*{Step 5 --- Workload Review}
+\subsection*{Step 5 -- Workload Review}
 
 After all jobs are assigned, the engine checks workload balance:
 \begin{itemize}
@@ -364,7 +364,7 @@ After all jobs are assigned, the engine checks workload balance:
     \item If any vehicle is at 100\,\% capacity on 4+ days, emit a \texttt{VEH\_BOTTLENECK} flag.
 \end{itemize}
 
-No jobs are moved or swapped at this stage---the flags exist so the owner can decide whether the imbalance is acceptable.
+No jobs are moved or swapped at this stage--the flags exist so the owner can decide whether the imbalance is acceptable.
 
 \subsection*{Algorithm Summary}
 
@@ -411,14 +411,14 @@ No jobs are moved or swapped at this stage---the flags exist so the owner can de
 % ===================================================================
 
 After Phase~1 assigns jobs to (technician, vehicle, day) bundles, Phase~2 arranges the stops within each day into a drivable geographic sequence.
-Version~1 uses a simple, explainable heuristic---no VRP solver.
+Version~1 uses a simple, explainable heuristic--no VRP solver.
 
-\subsection*{Step 1 --- Build the Day's Stop List}
+\subsection*{Step 1 -- Build the Day's Stop List}
 
 For each (technician $t$, vehicle $k$, day $d$) bundle, collect the assigned jobs $\mathcal{J}_{t,k,d}$.
 The depot (technician start location) is node~0.
 
-\subsection*{Step 2 --- Nearest--Neighbour Sequencing}
+\subsection*{Step 2 -- Nearest--Neighbour Sequencing}
 
 \begin{algorithm}[H]
 \caption{Nearest--Neighbour Stop Ordering}
@@ -440,7 +440,7 @@ The depot (technician start location) is node~0.
 Distances are computed via Haversine (straight-line), which is sufficient for sequencing.
 Road-network distances can be substituted without changing the algorithm.
 
-\subsection*{Step 3 --- Feasibility Verification}
+\subsection*{Step 3 -- Feasibility Verification}
 
 After sequencing, the engine walks the route and checks:
 
@@ -565,7 +565,7 @@ Outputs are designed for human review by a non-technical owner; the engine does 
 \section*{Owner--Controlled Policy Inputs}
 % ===================================================================
 
-The engine exposes a compact set of tunable parameters that a non-technical business owner can adjust---via Airtable fields or a configuration file---to steer planning behaviour without modifying code.
+The engine exposes a compact set of tunable parameters that a non-technical business owner can adjust--via Airtable fields or a configuration file--to steer planning behaviour without modifying code.
 
 \paragraph{Maximum daily route duration ($T_{\max}$).}
 Caps the total travel-plus-service time for any single route.
@@ -674,7 +674,7 @@ nes_dispatch/
     \item \textbf{Stateless stages.} Each stage is a pure function: it receives typed dataclass inputs and returns typed outputs. No global mutable state.
     \item \textbf{Fail-fast validation.} \texttt{validators.py} runs before the pipeline and rejects runs with missing columns, out-of-bounds coordinates, or conflicting exceptions. Errors are collected, not thrown one at a time.
     \item \textbf{Named rules.} Every scheduling decision is traceable to a named rule (e.g.\ \texttt{SKILL\_MATCH}, \texttt{CAPACITY\_OK}) and the inputs that triggered it. No opaque scoring or black-box behaviour.
-    \item \textbf{Idempotent runs.} Given the same inputs and config, the engine produces identical outputs. The algorithm is fully deterministic---no random seeds, no stochastic components.
+    \item \textbf{Idempotent runs.} Given the same inputs and config, the engine produces identical outputs. The algorithm is fully deterministic--no random seeds, no stochastic components.
     \item \textbf{Separation of I/O.} File reads, API calls, and map rendering live in \texttt{data/loaders.py} and \texttt{postprocess/output.py}. Core logic never touches the filesystem directly.
 \end{enumerate}
 
@@ -852,7 +852,7 @@ Each flag has a severity (\texttt{INFO}, \texttt{WARN}, \texttt{CRITICAL}), a sh
 \texttt{ROUTE\_DROP}  & WARN     & One or more Phase-1-scheduled jobs were dropped during Phase~2 routing because travel time pushed the route past $T_{\max}$. \\
 \texttt{GEOCODE\_OOB} & CRITICAL & A job's coordinates fall outside the New England bounding box. Likely a geocoding error; the job is excluded and must be corrected. \\
 \texttt{NO\_FEASIBLE} & CRITICAL & A (technician, vehicle, day) bundle produced by Phase~1 has no feasible route at all in Phase~2. The entire bundle is unserved. \\
-\texttt{SOLVER\_TIMEOUT} & \multicolumn{2}{p{8.5cm}}{\emph{Removed in Version~1---no solver is used.  Reserved for future Version~2 if a TSP/VRP solver is introduced.}} \\
+\texttt{SOLVER\_TIMEOUT} & \multicolumn{2}{p{8.5cm}}{\emph{Removed in Version~1--no solver is used.  Reserved for future Version~2 if a TSP/VRP solver is introduced.}} \\
 \bottomrule
 \end{longtable}
 }
