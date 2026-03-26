@@ -25,8 +25,8 @@ New England SteamWorks (NES) dispatches multiple technicians with service vehicl
 The planning task is decomposed into two sequential optimisation layers:
 
 \begin{enumerate}
-    \item \textbf{Layer~1 --- Weekly Scheduling:} Assign candidate jobs to (technician, vehicle, day) triples so as to maximise total weighted job value while keeping workloads approximately uniform across workers and vehicles.
-    \item \textbf{Layer~2 --- Daily Routing:} For each (technician, vehicle, day) bundle produced by Layer~1, solve an intra--cluster Vehicle Routing Problem to determine the optimal visit sequence.
+    \item \textbf{Layer~1 : Weekly Scheduling:} Assign candidate jobs to (technician, vehicle, day) triples so as to maximise total weighted job value while keeping workloads approximately uniform across workers and vehicles.
+    \item \textbf{Layer~2  Daily Routing:} For each (technician, vehicle, day) bundle produced by Layer~1, solve an intra--cluster Vehicle Routing Problem to determine the optimal visit sequence.
 \end{enumerate}
 
 The engine must:
@@ -50,10 +50,10 @@ The engine must:
 % ===================================================================
 
 \begin{itemize}
-    \item \textbf{ServiceM8} --- system of record for jobs, technicians, and operational data.
-    \item \textbf{Airtable} --- scheduling rules, policy settings, review layers.
-    \item \textbf{Python Engine} --- scheduling (Layer~1), clustering, routing (Layer~2), and output generation.
-    \item \textbf{Make\,/\,Zapier} --- orchestration and automation between the above.
+    \item \textbf{ServiceM8} -- system of record for jobs, technicians, and operational data.
+    \item \textbf{Airtable} -- scheduling rules, policy settings, review layers.
+    \item \textbf{Python Engine} -- scheduling (Layer~1), clustering, routing (Layer~2), and output generation.
+    \item \textbf{Make\,/\,Zapier} -- orchestration and automation between the above.
 \end{itemize}
 
 The Python engine consumes structured inputs and produces structured outputs; it is independently testable.
@@ -62,12 +62,12 @@ The Python engine consumes structured inputs and produces structured outputs; it
 \section*{Sets and Indices}
 % ===================================================================
 \begin{itemize}
-    \item $\mathcal{J} = \{1,\dots,J\}$ --- weekly candidate job pool (after exclusion filters).
-    \item $\mathcal{J}^H = \{j \in \mathcal{J} : h_j = 1\}$ --- subset of two-man (helper-needed) jobs.
-    \item $\mathcal{T} = \{1,\dots,T\}$ --- available technicians.
-    \item $\mathcal{K} = \{1,\dots,K\}$ --- available vehicles.
-    \item $\mathcal{D} = \{1,\dots,D\}$ --- working days in the planning week ($D \leq 5$).
-    \item $\mathcal{A}$ --- set of geographic areas / zones.
+    \item $\mathcal{J} = \{1,\dots,J\}$ -- weekly candidate job pool (after exclusion filters).
+    \item $\mathcal{J}^H = \{j \in \mathcal{J} : h_j = 1\}$ -- subset of two-man (helper-needed) jobs.
+    \item $\mathcal{T} = \{1,\dots,T\}$ -- available technicians.
+    \item $\mathcal{K} = \{1,\dots,K\}$ -- available vehicles.
+    \item $\mathcal{D} = \{1,\dots,D\}$ -- working days in the planning week ($D \leq 5$).
+    \item $\mathcal{A}$ -- set of geographic areas / zones.
     \item For a given technician $t \in \mathcal{T}$ on day $d \in \mathcal{D}$, the \emph{cluster} of feasible jobs is $\mathcal{C}_{t,d} \subseteq \mathcal{J}$ (Section~\ref{sec:clustering}).
 \end{itemize}
 
@@ -77,9 +77,9 @@ The Python engine consumes structured inputs and produces structured outputs; it
 
 \subsection*{Vehicle Types}
 \begin{itemize}
-    \item \textbf{V-2} --- required for Radiator Runs (special route type).
-    \item \textbf{V-4} --- weekly capacity switch (available / unavailable toggles capacity).
-    \item \textbf{V-5, V-6, V-7} --- standard service vehicles.
+    \item \textbf{V-2} -- required for Radiator Runs (special route type).
+    \item \textbf{V-4} -- weekly capacity switch (available / unavailable toggles capacity).
+    \item \textbf{V-5, V-6, V-7} -- standard service vehicles.
 \end{itemize}
 
 Each vehicle $k$ has a set of capability tags $\mathit{cap}_k$, a daily availability vector, a speed $v_k$ (m/min), a cost rate $c_k$ (\$/m), and a stop capacity $Q_k$.
@@ -101,17 +101,17 @@ Each job $j \in \mathcal{J}$ carries:
     \item Helper flag $h_j \in \{0,1\}$.
     \item Age in days $\alpha_j$ (time since job was created).
     \item Base revenue / value $w_j$.
-    \item Service time $\tau_j$ (minutes) --- average on-site duration.
+    \item Service time $\tau_j$ (minutes) -- average on-site duration.
 \end{itemize}
 
 \subsection*{Time and Distance}
 \begin{itemize}
-    \item Cluster radius: $R$ (meters) --- maximum Haversine distance from technician start to any job in the cluster.
-    \item Maximum inter-stop distance: $r$ (meters) --- maximum distance between consecutive stops.
-    \item Vehicle speed: $v_k$ (m/min) --- depends on vehicle $k \in \mathcal{K}$.
-    \item Cost per metre driven: $c_k$ (\$/m) --- depends on vehicle $k \in \mathcal{K}$.
-    \item Service time per stop: $\tau_j$ (minutes) --- depends on job $j \in \mathcal{J}$.
-    \item Vehicle capacity: $Q_k$ --- maximum number of stops vehicle $k$ can serve per route.
+    \item Cluster radius: $R$ (meters) -- maximum Haversine distance from technician start to any job in the cluster.
+    \item Maximum inter-stop distance: $r$ (meters) -- maximum distance between consecutive stops.
+    \item Vehicle speed: $v_k$ (m/min) -- depends on vehicle $k \in \mathcal{K}$.
+    \item Cost per metre driven: $c_k$ (\$/m) -- depends on vehicle $k \in \mathcal{K}$.
+    \item Service time per stop: $\tau_j$ (minutes) -- depends on job $j \in \mathcal{J}$.
+    \item Vehicle capacity: $Q_k$ -- maximum number of stops vehicle $k$ can serve per route.
     \item Maximum daily route duration: $T_{\max}$ (minutes).
     \item Maximum stops per route: $P$ (global upper bound; vehicle capacity $Q_k \leq P$).
 \end{itemize}
@@ -153,17 +153,17 @@ J-003 & 789 Broadway, Nashua NH & 42.7654 & $-$71.4676 & Area-3 & normal & 0 & 2
 
 \noindent Columns:
 \begin{itemize}
-    \item \texttt{job\_id} --- unique identifier.
-    \item \texttt{address} --- street address (geocoded to lat/lon).
-    \item \texttt{latitude}, \texttt{longitude} --- WGS-84 coordinates.
-    \item \texttt{area\_id} --- geographic area label ($a_j \in \mathcal{A}$).
-    \item \texttt{route\_type} --- \texttt{normal}, \texttt{radiator}, \texttt{nh\_overnight}, or \texttt{helper}.
-    \item \texttt{helper\_needed} --- binary flag ($h_j$); 1 if a second person is required.
-    \item \texttt{age\_days} --- days since the job was created ($\alpha_j$).
-    \item \texttt{value} --- base revenue / job weight ($w_j$, \$).
-    \item \texttt{service\_time\_min} --- expected on-site duration ($\tau_j$, minutes).
-    \item \texttt{status} --- \texttt{candidate} (eligible), \texttt{excluded}, or \texttt{assigned}.
-    \item \texttt{description} --- free-text note (not used by the optimiser).
+    \item \texttt{job\_id} -- unique identifier.
+    \item \texttt{address} -- street address (geocoded to lat/lon).
+    \item \texttt{latitude}, \texttt{longitude} -- WGS-84 coordinates.
+    \item \texttt{area\_id} -- geographic area label ($a_j \in \mathcal{A}$).
+    \item \texttt{route\_type} -- \texttt{normal}, \texttt{radiator}, \texttt{nh\_overnight}, or \texttt{helper}.
+    \item \texttt{helper\_needed} -- binary flag ($h_j$); 1 if a second person is required.
+    \item \texttt{age\_days} -- days since the job was created ($\alpha_j$).
+    \item \texttt{value} -- base revenue / job weight ($w_j$, \$).
+    \item \texttt{service\_time\_min} -- expected on-site duration ($\tau_j$, minutes).
+    \item \texttt{status} -- \texttt{candidate} (eligible), \texttt{excluded}, or \texttt{assigned}.
+    \item \texttt{description} -- free-text note (not used by the optimiser).
 \end{itemize}
 
 The engine pre-computes a distance matrix $d_{i,j}$ for every pair of jobs using map-based shortest-path distances (OSMnx / NetworkX), falling back to Haversine when no road path exists.
@@ -186,11 +186,11 @@ T-04 & Sam Torres     & boiler, steam\_trap, \dots & 42.7654 & $-$71.4676 & Mon-
 
 \noindent Columns:
 \begin{itemize}
-    \item \texttt{tech\_id} --- unique technician identifier.
-    \item \texttt{name} --- display name.
-    \item \texttt{skills} --- comma-separated list of skill tags ($\mathit{skill}_t$).
-    \item \texttt{home\_lat}, \texttt{home\_lon} --- home depot / start location ($y_t, x_t$).
-    \item \texttt{available\_days} --- base weekly availability ($\mathcal{D}_t$ before exceptions).
+    \item \texttt{tech\_id} -- unique technician identifier.
+    \item \texttt{name} -- display name.
+    \item \texttt{skills} -- comma-separated list of skill tags ($\mathit{skill}_t$).
+    \item \texttt{home\_lat}, \texttt{home\_lon} -- home depot / start location ($y_t, x_t$).
+    \item \texttt{available\_days} -- base weekly availability ($\mathcal{D}_t$ before exceptions).
 \end{itemize}
 
 \subsection*{Vehicle Data (\texttt{example\_vehicles.csv})}
@@ -212,13 +212,13 @@ V-7 & service\_truck     & boiler, radiator, \dots  & Mon--Fri & 450 & 0.00040 &
 
 \noindent Columns:
 \begin{itemize}
-    \item \texttt{vehicle\_id} --- unique vehicle identifier.
-    \item \texttt{vehicle\_type} --- vehicle class name.
-    \item \texttt{capability\_tags} --- comma-separated list of route-type capabilities ($\mathit{cap}_k$).
-    \item \texttt{available\_days} --- base weekly availability ($\mathcal{D}_k$ before exceptions).
-    \item \texttt{speed\_mpm} --- driving speed $v_k$ (metres per minute).
-    \item \texttt{cost\_per\_metre} --- cost rate $c_k$ (\$/metre).
-    \item \texttt{capacity} --- maximum stops per route $Q_k$.
+    \item \texttt{vehicle\_id} -- unique vehicle identifier.
+    \item \texttt{vehicle\_type} -- vehicle class name.
+    \item \texttt{capability\_tags} -- comma-separated list of route-type capabilities ($\mathit{cap}_k$).
+    \item \texttt{available\_days} -- base weekly availability ($\mathcal{D}_k$ before exceptions).
+    \item \texttt{speed\_mpm} -- driving speed $v_k$ (metres per minute).
+    \item \texttt{cost\_per\_metre} -- cost rate $c_k$ (\$/metre).
+    \item \texttt{capacity} -- maximum stops per route $Q_k$.
 \end{itemize}
 
 \subsection*{Weekly Exceptions Data (\texttt{example\_weekly\_exceptions.csv})}
@@ -240,12 +240,12 @@ EX-05 & technician & T-02 & Mon & unavailable & training \\
 
 \noindent Columns:
 \begin{itemize}
-    \item \texttt{exception\_id} --- unique identifier for the exception.
-    \item \texttt{scope\_type} --- \texttt{technician} or \texttt{vehicle}.
-    \item \texttt{scope\_id} --- the affected technician or vehicle ID.
-    \item \texttt{day} --- the day of the week the exception applies to.
-    \item \texttt{effect\_type} --- \texttt{unavailable} (entire day blocked) or \texttt{partial} (reduced capacity).
-    \item \texttt{effect\_value} --- reason or detail (e.g.\ PTO, maintenance, pre-booked job).
+    \item \texttt{exception\_id} -- unique identifier for the exception.
+    \item \texttt{scope\_type} -- \texttt{technician} or \texttt{vehicle}.
+    \item \texttt{scope\_id} -- the affected technician or vehicle ID.
+    \item \texttt{day} -- the day of the week the exception applies to.
+    \item \texttt{effect\_type} -- \texttt{unavailable} (entire day blocked) or \texttt{partial} (reduced capacity).
+    \item \texttt{effect\_value} -- reason or detail (e.g.\ PTO, maintenance, pre-booked job).
 \end{itemize}
 
 Exceptions are applied during data loading to compute effective availability sets $\mathcal{D}_t$ and $\mathcal{D}_k$ and are consumed by the Layer~1 eligibility pre-filter.
@@ -261,15 +261,15 @@ Jobs sharing the same address are grouped for route-shape evaluation (to avoid i
 The weekly planning pipeline runs the following stages in order:
 
 \begin{enumerate}
-    \item \textbf{Load \& Normalise} --- Import candidate pool, technician roster, vehicle roster, exceptions.
-    \item \textbf{Exclude} --- Remove jobs already scheduled, cancelled, urgent/manual, or in-workflow.
-    \item \textbf{Apply Weekly Exceptions} --- Compute true weekly capacity per technician--vehicle pair.
-    \item \textbf{Reserve Special Routes} --- Place Radiator Runs (require V-2), NH Overnight Runs, and helper-needed routes \emph{before} normal filling.
-    \item \textbf{Layer~1: Schedule (Section~\ref{sec:scheduling})} --- Assign remaining jobs to (technician, vehicle, day) triples via the scheduling MILP.
-    \item \textbf{Layer~2: Cluster \& Route (Sections~\ref{sec:clustering}--\ref{sec:model})} --- For each (technician, vehicle, day) bundle, build a geographic cluster, then solve the intra--cluster VRP.
-    \item \textbf{Select Standby Jobs} --- Choose plausible backup jobs per route.
-    \item \textbf{Compute Area Readiness} --- Derive area communication layer (\texttt{Good} / \texttt{Moderate} / \texttt{Lean}).
-    \item \textbf{Render Outputs} --- Route maps, flags, summaries, reason codes.
+    \item \textbf{Load \& Normalise} -- Import candidate pool, technician roster, vehicle roster, exceptions.
+    \item \textbf{Exclude} -- Remove jobs already scheduled, cancelled, urgent/manual, or in-workflow.
+    \item \textbf{Apply Weekly Exceptions} -- Compute true weekly capacity per technician--vehicle pair.
+    \item \textbf{Reserve Special Routes} -- Place Radiator Runs (require V-2), NH Overnight Runs, and helper-needed routes \emph{before} normal filling.
+    \item \textbf{Layer~1: Schedule (Section~\ref{sec:scheduling})} -- Assign remaining jobs to (technician, vehicle, day) triples via the scheduling MILP.
+    \item \textbf{Layer~2: Cluster \& Route (Sections~\ref{sec:clustering}--\ref{sec:model})} -- For each (technician, vehicle, day) bundle, build a geographic cluster, then solve the intra--cluster VRP.
+    \item \textbf{Select Standby Jobs} -- Choose plausible backup jobs per route.
+    \item \textbf{Compute Area Readiness} -- Derive area communication layer (\texttt{Good} / \texttt{Moderate} / \texttt{Lean}).
+    \item \textbf{Render Outputs} -- Route maps, flags, summaries, reason codes.
 \end{enumerate}
 
 % ===================================================================
@@ -352,43 +352,43 @@ where $\lambda \geq 0$ is a tunable penalty weight (larger $\lambda$ enforces st
 \subsection*{Subject to:}
 
 \begin{align}
-%--- (S1) each job assigned at most once ---
+%-- (S1) each job assigned at most once --
 & \sum_{t \in \mathcal{T}} \sum_{k \in \mathcal{K}} \sum_{d \in \mathcal{D}} y_{j,t,k,d} \leq 1, \quad \forall\, j \in \mathcal{J}
     && \text{(Each job assigned at most once)} \label{eq:assign_once}\\[4pt]
-%--- (S2) eligibility ---
+%-- (S2) eligibility --
 & y_{j,t,k,d} \leq e_{j,t,k,d}, \quad \forall\, j,t,k,d
     && \text{(Eligibility)} \label{eq:eligible}\\[4pt]
-%--- (S3) vehicle capacity per day ---
+%-- (S3) vehicle capacity per day --
 & \sum_{j \in \mathcal{J}} y_{j,t,k,d} \leq Q_k, \quad \forall\, t \in \mathcal{T},\; k \in \mathcal{K},\; d \in \mathcal{D}
     && \text{(Vehicle capacity per day)} \label{eq:sched_cap}\\[4pt]
-%--- (S4) daily time budget ---
+%-- (S4) daily time budget --
 & \sum_{j \in \mathcal{J}} \tau_j \, y_{j,t,k,d} \leq T_{\max}, \quad \forall\, t,k,d
     && \text{(Service-time budget; travel added in Layer~2)} \label{eq:sched_time}\\[4pt]
-%--- (S5) one vehicle per technician per day ---
+%-- (S5) one vehicle per technician per day --
 & \sum_{k \in \mathcal{K}} \sum_{j \in \mathcal{J}} y_{j,t,k,d} \leq P \cdot z_{t,k,d}, \quad \forall\, t,d
     && \text{(Link to vehicle indicator)} \label{eq:one_veh_link}\\[4pt]
 & \sum_{k \in \mathcal{K}} z_{t,k,d} \leq 1, \quad \forall\, t \in \mathcal{T},\; d \in \mathcal{D}
     && \text{(At most one vehicle per tech per day)} \label{eq:one_veh}\\[4pt]
 & z_{t,k,d} \in \{0,1\}
     && \label{eq:z_bin}\\[4pt]
-%--- (S6) one technician per vehicle per day ---
+%-- (S6) one technician per vehicle per day --
 & \sum_{t \in \mathcal{T}} z_{t,k,d} \leq 1, \quad \forall\, k \in \mathcal{K},\; d \in \mathcal{D}
     && \text{(At most one tech per vehicle per day)} \label{eq:one_tech}\\[4pt]
-%--- (S7) technician load definition (includes helper time) ---
+%-- (S7) technician load definition (includes helper time) --
 & L_{t,d} = \sum_{j \in \mathcal{J}} \sum_{k \in \mathcal{K}} \tau_j \, y_{j,t,k,d} \;+\; \sum_{j \in \mathcal{J}^H} \tau_j \, y^H_{j,t,d}, \quad \forall\, t,d
     && \text{(Technician-day load incl.\ helper)} \label{eq:tech_load}\\[4pt]
-%--- (S8) uniformity soft constraint ---
+%-- (S8) uniformity soft constraint --
 & L_{t,d} - \bar{L} = s^+_{t,d} - s^-_{t,d}, \quad \forall\, t,d
     && \text{(Deviation from mean load)} \label{eq:uniformity}\\[4pt]
 & s^+_{t,d},\; s^-_{t,d} \geq 0
     && \label{eq:s_nonneg}\\[6pt]
-%--- (S9) helper required for two-man jobs ---
+%-- (S9) helper required for two-man jobs --
 & \sum_{t \in \mathcal{T}} y^H_{j,t,d} = \sum_{t \in \mathcal{T}} \sum_{k \in \mathcal{K}} y_{j,t,k,d}, \quad \forall\, j \in \mathcal{J}^H,\; d \in \mathcal{D}
     && \text{(Each scheduled helper job gets one helper)} \label{eq:helper_assign}\\[4pt]
-%--- (S10) helper differs from primary technician ---
+%-- (S10) helper differs from primary technician --
 & y^H_{j,t,d} + \sum_{k \in \mathcal{K}} y_{j,t,k,d} \leq 1, \quad \forall\, j \in \mathcal{J}^H,\; t \in \mathcal{T},\; d \in \mathcal{D}
     && \text{(Helper $\neq$ primary technician)} \label{eq:helper_diff}\\[4pt]
-%--- (S11) helper eligibility ---
+%-- (S11) helper eligibility --
 & y^H_{j,t,d} \leq e^H_{j,t,d}, \quad \forall\, j \in \mathcal{J}^H,\; t \in \mathcal{T},\; d \in \mathcal{D}
     && \text{(Helper eligibility)} \label{eq:helper_elig}
 \end{align}
@@ -448,7 +448,7 @@ For each cluster $\mathcal{C}_{t,d}$ produced from the jobs assigned by Layer~1,
 \item Cluster radius $R$ and inter-stop radius $r$ (meters).
 \item Vehicle speed $v_k$ (m/min) and cost per metre $c_k$ (\$/m) for the assigned vehicle $k$.
 \item Service time $\tau_j$ (minutes) for each job $j$.
-\item Vehicle capacity $Q_k$ --- maximum stops for vehicle $k$ ($Q_k \leq P$).
+\item Vehicle capacity $Q_k$ -- maximum stops for vehicle $k$ ($Q_k \leq P$).
 \item Job score $w_j$ (revenue adjusted by seasonal weights).
 \item Maximum route duration $T_{\max}$ (minutes).
 \item Maximum number of stops $P$.
@@ -520,9 +520,9 @@ Each exclusion is annotated with a reason code for traceability.
 Special routes are planned \emph{before} normal route filling to reserve capacity:
 
 \begin{enumerate}
-    \item \textbf{Radiator Runs} --- Require vehicle V-2. Clustered separately.
-    \item \textbf{NH Overnight Runs} --- Long-distance routes requiring overnight stay.
-    \item \textbf{Two-Man / Helper Routes} --- Jobs flagged with $h_j = 1$; need two technicians or a helper.
+    \item \textbf{Radiator Runs} -- Require vehicle V-2. Clustered separately.
+    \item \textbf{NH Overnight Runs} -- Long-distance routes requiring overnight stay.
+    \item \textbf{Two-Man / Helper Routes} -- Jobs flagged with $h_j = 1$; need two technicians or a helper.
 \end{enumerate}
 
 After special routes consume capacity, the remaining capacity feeds normal route construction.
@@ -534,10 +534,10 @@ After special routes consume capacity, the remaining capacity feeds normal route
 For each cluster the engine can apply one or more of the following, matching the algorithms in the codebase:
 
 \begin{enumerate}
-    \item \textbf{MILP} (CBC solver via Pyomo) --- exact solution for small--to--medium clusters.
-    \item \textbf{Simulated Annealing} --- metaheuristic for larger clusters; supports street-filling variant.
-    \item \textbf{Greedy Heuristic} --- fast constructive heuristic with revenue-to-distance scoring.
-    \item \textbf{Brute-Force Search} --- exhaustive enumeration for very small instances.
+    \item \textbf{MILP} (CBC solver via Pyomo) -- exact solution for small--to--medium clusters.
+    \item \textbf{Simulated Annealing} -- metaheuristic for larger clusters; supports street-filling variant.
+    \item \textbf{Greedy Heuristic} -- fast constructive heuristic with revenue-to-distance scoring.
+    \item \textbf{Brute-Force Search} -- exhaustive enumeration for very small instances.
 \end{enumerate}
 
 A time budget of 120~seconds is enforced across all methods.
@@ -586,7 +586,7 @@ Outputs are designed for human review by a non-technical owner; the engine does 
 \section*{Owner--Controlled Policy Inputs}
 % ===================================================================
 
-The optimisation engine exposes a compact set of tunable parameters that a non-technical business owner can adjust---via Airtable fields or a configuration file---to steer planning behaviour without modifying code.
+The optimisation engine exposes a compact set of tunable parameters that a non-technical business owner can adjust--via Airtable fields or a configuration file--to steer planning behaviour without modifying code.
 
 \paragraph{Workload-balance weight ($\lambda$).}
 Controls the trade-off between maximising total job value and equalising daily loads across technicians (Eq.~\ref{eq:sched_obj}).
@@ -763,9 +763,9 @@ Job candidate pool (from ServiceM8 sync)      &           &           & $\bullet
 
 \paragraph{Rationale.}
 \begin{itemize}
-    \item \textbf{Code} holds logic that requires developer review to change---model structure, algorithm implementations, output formats. Changes go through version control and testing.
+    \item \textbf{Code} holds logic that requires developer review to change--model structure, algorithm implementations, output formats. Changes go through version control and testing.
     \item \textbf{Config (JSON/YAML)} holds numerical parameters that a developer or technically confident owner adjusts between runs. The config file is version-controlled alongside the code so that every run is reproducible. A schema validator rejects unknown keys or out-of-range values before the pipeline starts.
-    \item \textbf{Airtable} holds operational data that changes weekly or on demand---rosters, exceptions, pairings, area maps. The owner edits these freely; the engine pulls the latest state at the start of each run via the Airtable API. No code deployment is needed.
+    \item \textbf{Airtable} holds operational data that changes weekly or on demand--rosters, exceptions, pairings, area maps. The owner edits these freely; the engine pulls the latest state at the start of each run via the Airtable API. No code deployment is needed.
 \end{itemize}
 
 \paragraph{Override precedence.}
@@ -790,7 +790,7 @@ Correctness is enforced at three levels: input validation (before the pipeline r
 
 \subsection*{Input Validation (Pre-run)}
 
-\texttt{validators.py} performs the following checks when data is loaded. If any check fails, the run is aborted with a consolidated error report---not a single exception.
+\texttt{validators.py} performs the following checks when data is loaded. If any check fails, the run is aborted with a consolidated error report--not a single exception.
 
 \begin{enumerate}
     \item \textbf{Schema completeness.} Every required CSV column is present and non-null for every row.
@@ -919,8 +919,8 @@ This report is the primary traceability artefact.
 Flags and exclusion reasons are written to two files per run:
 
 \begin{itemize}
-    \item \texttt{flags\_\{date\}.json} --- array of flag objects, each with \texttt{code}, \texttt{severity}, \texttt{message}, and references to the affected route, technician, or job.
-    \item \texttt{exclusions\_\{date\}.json} --- array of exclusion objects, each with \texttt{job\_id}, \texttt{reason\_code}, and a human-readable \texttt{detail} string.
+    \item \texttt{flags\_\{date\}.json} -- array of flag objects, each with \texttt{code}, \texttt{severity}, \texttt{message}, and references to the affected route, technician, or job.
+    \item \texttt{exclusions\_\{date\}.json} -- array of exclusion objects, each with \texttt{job\_id}, \texttt{reason\_code}, and a human-readable \texttt{detail} string.
 \end{itemize}
 
 Both files are included in the review packet sent to the owner alongside route maps and summaries.
