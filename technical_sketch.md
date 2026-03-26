@@ -1,4 +1,4 @@
-# Technical Sketch — NES Two-Layer Weekly Dispatch Engine
+# Technical Sketch — NES Rules-Driven Weekly Dispatch Engine
 
 > Companion to `main.tex`. This document provides implementation-level detail:
 > module outline, data schemas, pseudocode, rule-evaluation pipeline, config
@@ -11,9 +11,10 @@
 Deliver a **deterministic, auditable** Python engine that:
 
 1. Accepts structured weekly data (jobs, technicians, vehicles, exceptions).
-2. Runs a two-layer optimisation pipeline (Layer 1 = scheduling, Layer 2 = routing).
+2. Runs a rules-driven planning pipeline (Phase 1 = score-and-assign scheduling, Phase 2 = nearest-neighbour stop ordering).
 3. Produces reviewable route proposals, review flags, and exclusion reports — never auto-books.
 4. Is independently testable (no UI, no database, pure function pipeline).
+5. Requires no external solver, optimisation library, or random component.
 
 ---
 
@@ -29,23 +30,20 @@ nes_dispatch/
 │   ├── models.py             # Job, Technician, Vehicle, WeeklyException, WeeklyData
 │   └── validators.py         # Pre-run sanity checks (schema, coordinates, refs)
 │
-├── scheduling/               # ── Layer 1 ──
-│   ├── eligibility.py        # Build e[j,t,k,d] and e_H[j,t,d] matrices
-│   ├── milp.py               # Pyomo Layer-1 MILP  (solve_scheduling)
-│   └── greedy.py             # Greedy fallback scheduler
+├── rules/                    # ── Phase 1 ──
+│   ├── scoring.py            # Composite priority-score formula
+│   ├── eligibility.py        # 10 named eligibility rules → pass/fail per slot
+│   ├── slot_selection.py     # Best-fit ranking (closest depot, lightest day, cheapest vehicle)
+│   ├── helpers.py            # Helper-assignment secondary pass
+│   └── workload.py           # Workload-review flags (no job movement)
 │
-├── routing/                  # ── Layer 2 ──
-│   ├── clustering.py         # Geographic cluster construction (Algorithm 1)
-│   ├── distance.py           # OSMnx / Haversine distance-matrix builder
-│   ├── milp.py               # Pyomo Layer-2 routing MILP (MTZ)
-│   ├── sa.py                 # Simulated Annealing solver
-│   ├── greedy.py             # Constructive greedy heuristic
-│   └── bfs.py                # Brute-force / branch-and-bound
+├── routing/                  # ── Phase 2 ──
+│   ├── distance.py           # OSMnx / Haversine distance computation
+│   └── nearest_neighbour.py  # NN stop ordering + feasibility verification
 │
 ├── postprocess/
 │   ├── standby.py            # Standby job ranking
 │   ├── readiness.py          # Area readiness computation (Good / Moderate / Lean)
-│   ├── flags.py              # Review-flag and exclusion-report generation
 │   └── output.py             # Route maps, text summaries, JSON artefacts
 │
 ├── config.py                 # Loads JSON/YAML config; merges Airtable overrides
@@ -57,8 +55,8 @@ nes_dispatch/
 | Convention | Detail |
 |---|---|
 | **Pure functions** | Every stage is `f(inputs, config) → outputs`. No global state. |
-| **Solver-agnostic** | `scheduling/milp.py` and `routing/milp.py` share the same `solve(data, config) → Result` signature. Falls back to greedy if Pyomo/CBC unavailable. |
-| **Idempotent** | Same inputs + config + seed → identical outputs. SA seeds live in config. |
+| **Named rules** | Every scheduling decision traces to a named rule (e.g. `SKILL_MATCH`, `CAPACITY_OK`) and the data that triggered it. |
+| **Deterministic** | Same inputs + config → identical outputs. No random seeds, no stochastic components. |
 | **I/O at the edges** | Only `loaders.py` and `output.py` touch the filesystem or network. |
 
 ---
@@ -137,7 +135,7 @@ class WeeklyData:
     exceptions: list[WeeklyException]
 ```
 
-### ScheduleAssignment (Layer 1 output)
+### ScheduleAssignment (Phase 1 output)
 
 ```python
 @dataclass
@@ -149,7 +147,7 @@ class ScheduleAssignment:
     helper_tech_id: str | None   # set for J^H jobs
 ```
 
-### RouteResult (Layer 2 output)
+### RouteResult (Phase 2 output)
 
 ```python
 @dataclass
@@ -158,12 +156,10 @@ class RouteResult:
     vehicle_id: str
     day: str
     visited_job_ids: list[str]   # ordered stop sequence
-    dropped_job_ids: list[str]   # L1-assigned but infeasible in L2
+    dropped_job_ids: list[str]   # Phase-1-assigned but infeasible in Phase 2
     total_distance_m: float
     total_time_min: float
-    objective_value: float
-    solver_method: str           # "milp" | "sa" | "greedy" | "bfs"
-    solver_status: str           # "optimal" | "feasible" | "timeout" | "infeasible"
+    method: str                  # "nearest_neighbour"
 ```
 
 ### ReviewFlag
@@ -196,18 +192,14 @@ Airtable overrides take precedence when present (see Code/Config/Airtable split 
 
 ```jsonc
 {
-  // --- Layer 1: Scheduling ---
-  "lambda_uniformity": 50.0,       // workload-balance penalty weight
+  // --- Phase 1: Scheduling ---
   "T_max_minutes": 480,            // daily time budget (service + travel)
+  "T_max_phase1_fraction": 0.80,   // conservative buffer (service-only in Phase 1)
   "P_max_stops": 14,               // global max stops per route
-  "T_max_layer1_fraction": 0.80,   // conservative buffer for L1 (service-only)
 
-  // --- Layer 2: Routing ---
+  // --- Phase 2: Routing ---
   "R_cluster_radius_m": 30000,     // cluster radius from depot (metres)
   "r_interstop_limit_m": 15000,    // max gap between consecutive stops
-  "R_increment_m": 5000,           // radius expansion step
-  "R_max_iterations": 5,           // max cluster-expansion iterations
-  "N_min_cluster": 5,              // minimum cluster size before expansion
 
   // --- Scoring ---
   "seasonal_weights": {
@@ -216,21 +208,14 @@ Airtable overrides take precedence when present (see Code/Config/Airtable split 
   },
   "summer_months": [3, 4, 5, 6, 7, 8, 9],
 
-  // --- Solver ---
-  "solver_timeout_sec": 120,
-  "sa_T_start": 1000.0,
-  "sa_alpha": 0.995,
-  "sa_inner_iterations": 200,
-  "random_seed": 42,
+  // --- Workload review thresholds ---
+  "tech_overload_pct": 0.90,       // flag if tech weekly load > 90% of capacity
+  "veh_bottleneck_days": 4,        // flag if vehicle at 100% capacity >= N days
+  "weak_standby_threshold": 2,     // flag if fewer than N standby candidates per route
 
   // --- Validation ---
   "lat_bounds": [41.0, 48.0],
-  "lon_bounds": [-74.0, -67.0],
-
-  // --- Flags ---
-  "weak_standby_threshold": 2,
-  "veh_bottleneck_days": 4,
-  "tech_overload_pct": 0.90
+  "lon_bounds": [-74.0, -67.0]
 }
 ```
 
@@ -283,51 +268,52 @@ helper_jobs    = [j for j in candidates if j.helper_needed]
 → subtract consumed capacity
 ```
 
-### Stage 5 — Eligibility Matrix (`eligibility.py`)
+### Stage 5 — Phase 1: Score & Schedule (`rules/`)
 
-For each `(j, t, k, d)`:
+For each candidate job j (in descending score order):
 
-```
-e[j,t,k,d] = 1 iff ALL of:
-    d ∈ D_t                                              # tech available
-    d ∈ D_k                                              # vehicle available
-    skill_t ⊇ req(j)                                     # skills match
-    cap_k ⊇ ρ_j                                          # vehicle capabilities match
-    haversine(y_t, x_t, lat_j, lon_j) ≤ R                # within cluster radius
-    (t, j) ∉ prohibited_pairs                             # no prohibited pairing
+1. **Compute composite score:**
+   ```
+   score_j = w_g·geo_j + w_f·fair_j + w_a·age_j + w_r·readiness_j
+   ```
 
-# Helper eligibility (for j ∈ J^H):
-e_H[j,t,d] = 1 iff ALL of:
-    d ∈ D_t
-    skill_t ⊇ req(j)
-    haversine(y_t, x_t, lat_j, lon_j) ≤ R
-```
+2. **Check eligibility** — for each candidate (t, k, d) slot, all 10 rules must pass:
 
-### Stage 6 — Layer 1: Scheduling MILP (`scheduling/milp.py`)
+   | Rule | Condition |
+   |---|---|
+   | `TECH_AVAILABLE` | d ∈ D_t |
+   | `VEH_AVAILABLE` | d ∈ D_k |
+   | `SKILL_MATCH` | skill_t ⊇ req(j) |
+   | `VEH_CAPABILITY` | cap_k ⊇ ρ_j |
+   | `WITHIN_RADIUS` | haversine(depot_t, job_j) ≤ R |
+   | `NOT_PROHIBITED` | (t, j) ∉ prohibited pairs |
+   | `CAPACITY_OK` | current stops for (k, d) < Q_k |
+   | `TIME_OK` | current service time for (t, d) + τ_j ≤ T_max × buffer |
+   | `ONE_VEH_PER_TECH` | tech t not already using a different vehicle on day d |
+   | `ONE_TECH_PER_VEH` | vehicle k not already assigned to a different tech on day d |
 
-Maximise weighted value minus uniformity penalty, subject to:
-- `S1`: each job assigned at most once
-- `S2`: eligibility
-- `S3`: vehicle capacity per day
-- `S4`: service-time budget (conservative: `T_max × T_max_layer1_fraction`)
-- `S5–S6`: one vehicle per tech per day, one tech per vehicle per day
-- `S7`: technician-day load (includes helper time)
-- `S8`: uniformity deviation
-- `S9–S11`: helper assignment, helper ≠ primary, helper eligibility
+3. **Select best-fit slot** (closest depot → lightest day → cheapest vehicle).
 
-### Stage 7 — Layer 2: Cluster & Route (`routing/`)
+4. **Helper pass** (for j ∈ J^H): find a second tech ≠ primary; same eligibility minus vehicle rules.
 
-For each `(tech_id, vehicle_id, day)` bundle from Layer 1:
-1. Build geographic cluster (Algorithm 1 with radius expansion)
-2. Compute distance sub-matrix (OSMnx, Haversine fallback)
-3. Solve intra-cluster VRP (MILP → SA → Greedy → BFS cascade)
-4. Verify post-route assertions
+5. **Workload review:** flag `TECH_OVERLOAD` if any tech > 90% hours; flag `VEH_BOTTLENECK` if any vehicle at capacity 4+ days.
 
-### Stage 8 — Post-processing (`postprocess/`)
+### Stage 6 — Phase 2: Order Stops (`routing/`)
+
+For each (tech, vehicle, day) bundle from Phase 1:
+
+1. **Nearest-neighbour sequencing:** start at depot, repeatedly visit the closest unvisited stop, return to depot.
+2. **Feasibility verification:** walk the route and check:
+   - Total travel + service time ≤ T_max → drop last-added job if violated (`ROUTE_DROP`)
+   - Stop count ≤ Q_k
+   - Inter-stop distance ≤ r → flag `CROSS_AREA` if violated (guidance only)
+3. If any job is dropped, re-run NN on the reduced set.
+
+### Stage 7 — Post-processing (`postprocess/`)
 
 - Rank standby jobs per route
 - Compute area readiness (Good / Moderate / Lean)
-- Generate review flags (10 codes, 3 severity levels)
+- Generate review flags (9 active codes, 3 severity levels)
 - Generate exclusion report (11 reason codes)
 
 ---
@@ -351,11 +337,9 @@ def run_weekly_plan(config_path: str, data_dir: str) -> ReviewPackage:
 
     # ── 3. Exclude non-candidate jobs ───────────────────────────────
     candidates, exclusions = apply_exclusion_filters(wd.jobs)
-    #   → exclusions: list[Exclusion] with reason codes
 
     # ── 4. Apply weekly exceptions ──────────────────────────────────
     apply_exceptions(wd.technicians, wd.vehicles, wd.exceptions)
-    #   → mutates available_days on tech/vehicle objects
 
     # ── 5. Reserve special routes ───────────────────────────────────
     special_jobs, normal_jobs = split_special_routes(candidates)
@@ -364,104 +348,70 @@ def run_weekly_plan(config_path: str, data_dir: str) -> ReviewPackage:
     )
     consumed_capacity = compute_consumed_capacity(special_assignments)
 
-    # ── 6. Layer 1: Schedule (MILP or greedy fallback) ──────────────
-    eligibility = build_eligibility_matrix(
-        normal_jobs, wd.technicians, wd.vehicles, config
-    )
-    helper_eligibility = build_helper_eligibility(
-        [j for j in normal_jobs if j.helper_needed],
-        wd.technicians, config
-    )
+    # ── 6. Phase 1: Score & Schedule (rules-based) ──────────────────
+    scored_jobs = score_jobs(normal_jobs, config)
+    scored_jobs.sort(key=lambda j: (-j.score, -j.age_days, -j.value))
 
-    try:
-        schedule: dict[(str, str, str), list[ScheduleAssignment]] = \
-            solve_scheduling_milp(
-                jobs=normal_jobs,
-                technicians=wd.technicians,
-                vehicles=wd.vehicles,
-                eligibility=eligibility,
-                helper_eligibility=helper_eligibility,
-                consumed_capacity=consumed_capacity,
-                config=config,
-            )
-    except SolverUnavailable:
-        schedule = greedy_scheduling(
-            normal_jobs, wd.technicians, wd.vehicles,
-            eligibility, config
+    schedule = {}          # (tech_id, vehicle_id, day) → [ScheduleAssignment]
+    phase1_exclusions = []
+
+    for job in scored_jobs:
+        best_slot = find_best_eligible_slot(
+            job, wd.technicians, wd.vehicles, config, schedule,
+            consumed_capacity
         )
+        if best_slot:
+            assign(job, best_slot, schedule)
+            if job.helper_needed:
+                helper = find_helper(job, best_slot.day, wd.technicians,
+                                     config, schedule)
+                if not helper:
+                    unassign(job, schedule)
+                    phase1_exclusions.append(
+                        Exclusion(job.job_id, "HELPER_UNAVAIL", "...")
+                    )
+        else:
+            phase1_exclusions.append(
+                Exclusion(job.job_id, first_failing_rule(job), "...")
+            )
 
-    l1_exclusions = collect_unassigned_reasons(normal_jobs, schedule)
-    exclusions.extend(l1_exclusions)
+    exclusions.extend(phase1_exclusions)
 
-    # ── 7. Layer 1 assertion check ──────────────────────────────────
-    l1_violations = verify_layer1(schedule, eligibility, config)
-    #   → log violations; mark routes INFEASIBLE if any
+    # ── 7. Phase 1 workload review ──────────────────────────────────
+    workload_flags = check_workload(schedule, wd.technicians, config)
 
-    # ── 8. Layer 2: Cluster & Route (per bundle) ────────────────────
+    # ── 8. Phase 2: Order Stops (nearest-neighbour) ─────────────────
     all_routes: list[RouteResult] = []
     for (tech_id, veh_id, day), assignments in schedule.items():
         tech = lookup_tech(tech_id, wd.technicians)
         veh  = lookup_vehicle(veh_id, wd.vehicles)
-        jobs_bundle = [a.job for a in assignments]
+        jobs = [a.job for a in assignments]
 
-        # 8a. Build cluster
-        cluster = build_cluster(
-            tech, jobs_bundle, config.R_cluster_radius_m,
-            config.N_min_cluster, config.R_increment_m,
-            config.R_max_iterations
-        )
+        # 8a. Nearest-neighbour sequencing
+        route_order = nearest_neighbour(tech.depot, jobs)
 
-        # 8b. Distance matrix
-        dist_matrix = build_distance_matrix(tech, cluster)
-
-        # 8c. Solve routing (cascade: MILP → SA → Greedy → BFS)
-        route = solve_routing(
-            cluster, dist_matrix, veh, config,
-            methods=["milp", "sa", "greedy", "bfs"]
-        )
-
-        # 8d. Post-route assertions
-        violations = verify_layer2(route, dist_matrix, veh, config)
-        if violations:
-            route.solver_status = "infeasible"
-            log_violations(violations)
+        # 8b. Feasibility check — drop jobs if T_max exceeded
+        route, dropped = verify_feasibility(route_order, veh, config)
+        for jid in dropped:
+            exclusions.append(Exclusion(jid, "ROUTE_DROP", "..."))
 
         all_routes.append(route)
-
-        # 8e. Collect dropped jobs
-        for jid in route.dropped_job_ids:
-            exclusions.append(Exclusion(jid, "ROUTE_DROP", "..."))
 
     # ── 9. Merge special + normal routes ────────────────────────────
     all_routes = special_assignments.routes + all_routes
 
-    # ── 10. Select standby jobs ─────────────────────────────────────
-    unassigned_pool = get_unassigned_candidates(candidates, all_routes)
-    standby = select_standby_per_route(
-        all_routes, unassigned_pool, config
-    )
-
-    # ── 11. Area readiness ──────────────────────────────────────────
+    # ── 10. Standby, readiness, flags, outputs ──────────────────────
+    unassigned = get_unassigned(candidates, all_routes)
+    standby = select_standby_per_route(all_routes, unassigned, config)
     readiness = compute_area_readiness(all_routes, standby, config)
+    flags = generate_review_flags(all_routes, standby, wd, config)
+    flags.extend(workload_flags)
 
-    # ── 12. Review flags ────────────────────────────────────────────
-    flags = generate_review_flags(
-        all_routes, standby, wd, config
-    )
-
-    # ── 13. Render outputs ──────────────────────────────────────────
-    write_flags_json(flags, output_dir)
-    write_exclusions_json(exclusions, output_dir)
-    write_route_summaries(all_routes, standby, readiness, output_dir)
-    render_route_maps(all_routes, output_dir)
-    write_airtable_snapshot(wd, output_dir)  # audit trail
+    write_outputs(all_routes, standby, readiness, flags, exclusions)
 
     return ReviewPackage(
-        routes=all_routes,
-        standby=standby,
-        readiness=readiness,
-        flags=flags,
-        exclusions=exclusions,
+        routes=all_routes, standby=standby,
+        readiness=readiness, flags=flags, exclusions=exclusions,
     )
 ```
 
@@ -500,22 +450,22 @@ def run_weekly_plan(config_path: str, data_dir: str) -> ReviewPackage:
    └───────────────┬─────────────────────┘
                    ▼
    ┌─────────────────────────────────────┐
-   │  4. LAYER 1 — Scheduling MILP       │
-   │     • build eligibility matrices    │
-   │     • solve: max Σ w_j y - λ Σ dev │
-   │     • fallback: greedy              │
-   │     • output: (tech, veh, day) → [j]│
+   │  4. PHASE 1 — Score & Schedule      │
+   │     • composite priority scoring    │
+   │     • 10 named eligibility rules    │
+   │     • best-fit slot selection       │
+   │     • helper assignment pass        │
+   │     • workload review flags         │
    └───────────────┬─────────────────────┘
                    ▼
    ┌─────────────────────────────────────┐
-   │  5. LAYER 2 — per (tech, veh, day)  │
+   │  5. PHASE 2 — Order Stops           │
+   │     per (tech, vehicle, day):       │
    │     ┌──────────────────────┐        │
-   │     │ 5a. Build cluster    │        │
-   │     │ 5b. Distance matrix  │        │
-   │     │ 5c. Solve VRP        │        │
-   │     │     MILP → SA →      │        │
-   │     │     Greedy → BFS     │        │
-   │     │ 5d. Assert feasible  │        │
+   │     │ 5a. NN sequencing    │        │
+   │     │ 5b. Feasibility check│        │
+   │     │ 5c. Drop if T_max   │        │
+   │     │     exceeded         │        │
    │     └──────────────────────┘        │
    └───────────────┬─────────────────────┘
                    ▼
@@ -523,7 +473,7 @@ def run_weekly_plan(config_path: str, data_dir: str) -> ReviewPackage:
    │  6. Post-processing                 │
    │     • standby ranking               │
    │     • area readiness                │
-   │     • review flags (10 codes)       │
+   │     • review flags (9 codes)        │
    │     • exclusion report (11 codes)   │
    └───────────────┬─────────────────────┘
                    ▼
@@ -552,42 +502,48 @@ def run_weekly_plan(config_path: str, data_dir: str) -> ReviewPackage:
 | `VEH_BOTTLENECK` | WARN | Vehicle at 100% capacity ≥4 days |
 | `TECH_OVERLOAD` | WARN | Tech weekly load >90% available hours |
 | `HELPER_TRAVEL` | WARN | Helper depot >R from primary depot |
-| `ROUTE_DROP` | WARN | L1 job dropped during L2 routing |
-| `SOLVER_TIMEOUT` | WARN | Solver hit time limit |
+| `ROUTE_DROP` | WARN | Phase-1-scheduled job dropped during Phase 2 routing |
 | `GEOCODE_OOB` | CRITICAL | Coordinates outside NE bounding box |
-| `NO_FEASIBLE` | CRITICAL | L1 bundle has no feasible L2 route |
+| `NO_FEASIBLE` | CRITICAL | Phase 1 bundle has no feasible Phase 2 route |
+
+> `SOLVER_TIMEOUT` is reserved for future Version 2 if a TSP/VRP solver is introduced. Not used in V1.
 
 ## 9. Exclusion Reason Codes (quick reference)
 
 | Code | Meaning |
 |---|---|
 | `ALREADY_ASSIGNED` | Job assigned in a prior run |
-| `STATUS_EXCLUDED` | Status is excluded / cancelled |
-| `NO_ELIGIBLE_TRIPLE` | No (tech, vehicle, day) passes eligibility |
+| `STATUS_EXCLUDED` | Status is `excluded` or `cancelled` |
+| `NO_ELIGIBLE_TRIPLE` | No (tech, vehicle, day) passes all 10 eligibility rules |
 | `CAPACITY_FULL` | All eligible slots at vehicle capacity |
 | `TIME_BUDGET` | Adding job exceeds T_max everywhere |
 | `CLUSTER_RADIUS` | Job beyond R from all technician depots |
 | `SKILL_MISMATCH` | No technician has required skills |
 | `VEHICLE_MISMATCH` | No vehicle has required capabilities |
 | `HELPER_UNAVAIL` | Helper needed but no second tech eligible |
-| `PROHIBITED_PAIR` | All eligible techs are on the exclusion list |
-| `ROUTE_DROP` | Scheduled by L1, dropped by L2 (travel infeasible) |
+| `PROHIBITED_PAIR` | All eligible techs on exclusion list |
+| `ROUTE_DROP` | Scheduled by Phase 1, dropped by Phase 2 (travel infeasible) |
 
-## 8. Testable Units
+## 10. Testable Units
 
 The design should make these units independently testable:
 
-- input normalization
+- input normalisation and validation
 - exclusion filtering
 - duplicate-address grouping
-- capacity calculation
+- composite priority scoring
+- 10 named eligibility rules (individual and combined)
+- best-fit slot selection
+- helper assignment logic
+- nearest-neighbour sequencing
+- feasibility verification and job dropping
+- capacity tracking
 - special-route placement
-- seasonal score weighting
 - standby selection
-- readiness computation
+- area readiness computation
 - review flag generation
 
-## 9. Delivery Shape
+## 11. Delivery Shape
 
 The weekly engine run should output a review package with:
 

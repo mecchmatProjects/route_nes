@@ -164,7 +164,7 @@ J-003 & 789 Broadway, Nashua NH & 42.7654 & $-$71.4676 & Area-3 & normal & 0 & 2
     \item \texttt{value} -- base revenue / job weight ($w_j$, \$).
     \item \texttt{service\_time\_min} -- expected on-site duration ($\tau_j$, minutes).
     \item \texttt{status} -- \texttt{candidate} (eligible), \texttt{excluded}, or \texttt{assigned}.
-    \item \texttt{description} -- free-text note (not used by the optimiser).
+    \item \texttt{description} -- free-text note (not used by the engine).
 \end{itemize}
 
 The engine pre-computes a distance matrix $d_{i,j}$ for every pair of jobs using map-based shortest-path distances (OSMnx / NetworkX), falling back to Haversine when no road path exists.
@@ -462,7 +462,7 @@ If any job is dropped, the engine re-runs the nearest-neighbour on the reduced s
 
 \subsection*{Why nearest-neighbour (not a solver)}
 \begin{itemize}
-    \item \textbf{Transparent:} the route order is``go to the closest un-visited stop.''  No parameter tuning, no black-box behaviour.
+    \item \textbf{Transparent:} the route order is ``go to the closest un-visited stop.''  No parameter tuning, no black-box behaviour.
     \item \textbf{Fast:} $O(n^2)$ for $n$ stops.  For typical NES clusters ($n \leq 14$), this is instantaneous.
     \item \textbf{Good enough:} nearest-neighbour typically delivers routes within 20--25\,\% of the optimal tour length.  For Version~1 the priority is correctness and reviewability, not distance optimality.
     \item \textbf{Upgrade path:} if route quality matters (fuel costs, tight schedules), a 2-opt improvement pass or a proper TSP/VRP solver can be added in Version~2 as a drop-in replacement.
@@ -770,7 +770,7 @@ Correctness is enforced at three levels: input validation (before the pipeline r
     \item \textbf{Referential integrity.} Every \texttt{scope\_id} in the exceptions file matches an existing technician or vehicle ID. Every \texttt{area\_id} on a job exists in the area definitions.
     \item \textbf{Availability consistency.} After applying exceptions, at least one (technician, vehicle, day) triple must remain feasible; otherwise the run would produce an empty schedule.
     \item \textbf{Duplicate detection.} Duplicate \texttt{job\_id}, \texttt{tech\_id}, or \texttt{vehicle\_id} values are flagged.
-    \item \textbf{Config schema.} The JSON/YAML config is validated against a schema: all numerical parameters are present, positive, and within documented bounds (e.g.\ $0 \leq \lambda \leq 10\,000$, $R > 0$).
+    \item \textbf{Config schema.} The JSON/YAML config is validated against a schema: all numerical parameters are present, positive, and within documented bounds (e.g.\ $T_{\max} > 0$, $R > 0$, $P \geq 1$).
 \end{enumerate}
 
 \subsection*{Post-Phase Constraint Verification}
