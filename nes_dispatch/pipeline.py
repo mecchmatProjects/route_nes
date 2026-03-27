@@ -6,13 +6,33 @@ Each public function is a pure stage: f(inputs, config) → outputs.
 
 from __future__ import annotations
 
+import math
+from typing import Any
+
 from .data.models import (
     Exclusion,
     Job,
+    ScheduleAssignment,
     Technician,
     Vehicle,
     WeeklyException,
 )
+
+
+# ── Geo helper ──────────────────────────────────────────────────────────────
+
+_EARTH_RADIUS_M = 6_371_000.0
+
+
+def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle distance in metres between two WGS-84 points."""
+    rlat1, rlon1 = math.radians(lat1), math.radians(lon1)
+    rlat2, rlon2 = math.radians(lat2), math.radians(lon2)
+    dlat = rlat2 - rlat1
+    dlon = rlon2 - rlon1
+    a = (math.sin(dlat / 2) ** 2
+         + math.cos(rlat1) * math.cos(rlat2) * math.sin(dlon / 2) ** 2)
+    return 2 * _EARTH_RADIUS_M * math.asin(math.sqrt(a))
 
 
 # ── Stage 2: Exclusion Filters ──────────────────────────────────────────────
@@ -84,3 +104,295 @@ def apply_exceptions(
                 veh.available_days = [
                     d for d in veh.available_days if d != ex.day
                 ]
+
+
+# ── Stage 4: Reserve Special Routes ─────────────────────────────────────────
+
+# Route types that are handled before the normal score-and-assign Phase 1.
+_SPECIAL_ROUTE_TYPES = {"radiator", "nh_overnight", "helper"}
+
+
+def split_special_routes(
+    candidates: list[Job],
+) -> tuple[list[Job], list[Job]]:
+    """Partition candidates into (special_jobs, normal_jobs).
+
+    A job is "special" if its route_type is radiator / nh_overnight / helper,
+    or if helper_needed is True.
+    """
+    special: list[Job] = []
+    normal: list[Job] = []
+    for j in candidates:
+        if j.route_type in _SPECIAL_ROUTE_TYPES or j.helper_needed:
+            special.append(j)
+        else:
+            normal.append(j)
+    return special, normal
+
+
+def _skill_match(tech: Technician, job: Job) -> bool:
+    """True when the technician's skill set covers the job's route_type needs.
+
+    Mapping from route_type → required skill(s):
+      • radiator  → {"radiator"}
+      • nh_overnight → {"overhaul"}
+      • helper    → {"install"}          (boiler install assist)
+      • normal    → {"boiler_service"}   (fallback)
+    """
+    needs: set[str]
+    if job.route_type == "radiator":
+        needs = {"radiator"}
+    elif job.route_type == "nh_overnight":
+        needs = {"overhaul"}
+    elif job.route_type == "helper" or job.helper_needed:
+        needs = {"install"}
+    else:
+        needs = {"boiler_service"}
+    return needs.issubset(set(tech.skills))
+
+
+def _vehicle_capable(vehicle: Vehicle, job: Job) -> bool:
+    """True when the vehicle's capability tags cover the job's route_type."""
+    needs: set[str]
+    if job.route_type == "radiator":
+        needs = {"radiator"}
+    elif job.route_type == "nh_overnight":
+        needs = {"overhaul"}
+    elif job.route_type == "helper" or job.helper_needed:
+        needs = {"install"}
+    else:
+        needs = {"boiler_service"}
+    return needs.issubset(set(vehicle.capability_tags))
+
+
+def plan_special_routes(
+    special_jobs: list[Job],
+    technicians: list[Technician],
+    vehicles: list[Vehicle],
+    config: dict[str, Any],
+) -> tuple[list[ScheduleAssignment], list[Exclusion]]:
+    """Assign special jobs to reserved (tech, vehicle, day) slots.
+
+    Returns (assignments, exclusions).
+
+    Uses a greedy approach: for each special job, find the first eligible
+    (tech, vehicle, day) triple that satisfies skill match, vehicle capability,
+    availability, cluster radius, and capacity — then reserve it.
+
+    Helper jobs additionally require a second eligible technician.
+    """
+    R = config.get("R_cluster_radius_m", 30_000)
+    T_max = config.get("T_max_minutes", 480)
+    phase1_frac = config.get("T_max_phase1_fraction", 0.80)
+    time_budget = T_max * phase1_frac
+
+    # Mutable capacity trackers
+    # (vehicle_id, day) → number of stops already assigned
+    stop_count: dict[tuple[str, str], int] = {}
+    # (tech_id, day) → total service minutes already committed
+    service_mins: dict[tuple[str, str], float] = {}
+    # (tech_id, day) → vehicle_id already paired on that day
+    tech_veh: dict[tuple[str, str], str] = {}
+    # (vehicle_id, day) → tech_id already driving on that day
+    veh_tech: dict[tuple[str, str], str] = {}
+
+    assignments: list[ScheduleAssignment] = []
+    exclusions: list[Exclusion] = []
+
+    # Process special jobs sorted by age (oldest first) then value (highest first)
+    # to give priority to the most urgent / valuable special work.
+    sorted_specials = sorted(
+        special_jobs, key=lambda j: (-j.age_days, -j.value)
+    )
+
+    for job in sorted_specials:
+        best = _find_special_slot(
+            job, technicians, vehicles, config,
+            R, time_budget, stop_count, service_mins, tech_veh, veh_tech,
+        )
+
+        if best is None:
+            exclusions.append(Exclusion(
+                job_id=job.job_id,
+                reason_code="NO_ELIGIBLE_TRIPLE",
+                detail=(
+                    f"No eligible (tech, vehicle, day) for "
+                    f"route_type={job.route_type!r}"
+                ),
+            ))
+            continue
+
+        tech_id, veh_id, day = best
+
+        # Find helper for two-man jobs
+        helper_id: str | None = None
+        if job.helper_needed:
+            helper_id = _find_helper_tech(
+                job, day, tech_id, technicians, R
+            )
+            if helper_id is None:
+                exclusions.append(Exclusion(
+                    job_id=job.job_id,
+                    reason_code="HELPER_UNAVAIL",
+                    detail="No second technician available for helper job",
+                ))
+                continue
+
+        # Commit assignment
+        assignments.append(ScheduleAssignment(
+            job_id=job.job_id,
+            tech_id=tech_id,
+            vehicle_id=veh_id,
+            day=day,
+            helper_tech_id=helper_id,
+        ))
+        _commit_slot(
+            tech_id, veh_id, day, job,
+            stop_count, service_mins, tech_veh, veh_tech,
+        )
+
+    return assignments, exclusions
+
+
+def _find_special_slot(
+    job: Job,
+    technicians: list[Technician],
+    vehicles: list[Vehicle],
+    config: dict[str, Any],
+    R: float,
+    time_budget: float,
+    stop_count: dict[tuple[str, str], int],
+    service_mins: dict[tuple[str, str], float],
+    tech_veh: dict[tuple[str, str], str],
+    veh_tech: dict[tuple[str, str], str],
+) -> tuple[str, str, str] | None:
+    """Find the best eligible (tech_id, vehicle_id, day) for *job*.
+
+    Selection priority: closest depot → lightest day → cheapest vehicle.
+    Returns None if nothing is feasible.
+    """
+    P_max = config.get("P_max_stops", 14)
+    candidates: list[tuple[float, int, float, str, str, str]] = []
+
+    for tech in technicians:
+        if not _skill_match(tech, job):
+            continue
+        dist = _haversine_m(tech.home_lat, tech.home_lon,
+                            job.latitude, job.longitude)
+        if dist > R:
+            continue
+
+        for veh in vehicles:
+            if not _vehicle_capable(veh, job):
+                continue
+            for day in tech.available_days:
+                if day not in veh.available_days:
+                    continue
+                # ONE_VEH_PER_TECH
+                existing_veh = tech_veh.get((tech.tech_id, day))
+                if existing_veh is not None and existing_veh != veh.vehicle_id:
+                    continue
+                # ONE_TECH_PER_VEH
+                existing_tech = veh_tech.get((veh.vehicle_id, day))
+                if existing_tech is not None and existing_tech != tech.tech_id:
+                    continue
+                # CAPACITY_OK
+                if stop_count.get((veh.vehicle_id, day), 0) >= min(veh.capacity, P_max):
+                    continue
+                # TIME_OK
+                if (service_mins.get((tech.tech_id, day), 0.0)
+                        + job.service_time_min > time_budget):
+                    continue
+
+                # Rank: closest depot, lightest day, cheapest vehicle
+                day_load = stop_count.get((veh.vehicle_id, day), 0)
+                candidates.append(
+                    (dist, day_load, veh.cost_per_metre,
+                     tech.tech_id, veh.vehicle_id, day)
+                )
+
+    if not candidates:
+        return None
+    candidates.sort()
+    best = candidates[0]
+    return best[3], best[4], best[5]
+
+
+def _find_helper_tech(
+    job: Job,
+    day: str,
+    primary_tech_id: str,
+    technicians: list[Technician],
+    R: float,
+) -> str | None:
+    """Find a second technician to assist on *day* for a helper job.
+
+    Must be available on the day, have matching skills, and be within radius.
+    Returns the helper tech_id or None.
+    """
+    best: tuple[float, str] | None = None
+    for tech in technicians:
+        if tech.tech_id == primary_tech_id:
+            continue
+        if day not in tech.available_days:
+            continue
+        if not _skill_match(tech, job):
+            continue
+        dist = _haversine_m(tech.home_lat, tech.home_lon,
+                            job.latitude, job.longitude)
+        if dist > R:
+            continue
+        if best is None or dist < best[0]:
+            best = (dist, tech.tech_id)
+    return best[1] if best else None
+
+
+def _commit_slot(
+    tech_id: str,
+    veh_id: str,
+    day: str,
+    job: Job,
+    stop_count: dict[tuple[str, str], int],
+    service_mins: dict[tuple[str, str], float],
+    tech_veh: dict[tuple[str, str], str],
+    veh_tech: dict[tuple[str, str], str],
+) -> None:
+    """Record that *job* has been assigned to (tech, vehicle, day)."""
+    stop_count[(veh_id, day)] = stop_count.get((veh_id, day), 0) + 1
+    service_mins[(tech_id, day)] = (
+        service_mins.get((tech_id, day), 0.0) + job.service_time_min
+    )
+    tech_veh[(tech_id, day)] = veh_id
+    veh_tech[(veh_id, day)] = tech_id
+
+
+def compute_consumed_capacity(
+    assignments: list[ScheduleAssignment],
+    jobs_lookup: dict[str, Job],
+) -> dict[str, Any]:
+    """Summarise capacity consumed by special-route assignments.
+
+    Returns a dict with:
+      "stop_count"   : {(vehicle_id, day): int}
+      "service_mins" : {(tech_id, day): float}
+      "tech_veh"     : {(tech_id, day): vehicle_id}
+      "veh_tech"     : {(vehicle_id, day): tech_id}
+    """
+    stop_count: dict[tuple[str, str], int] = {}
+    service_mins: dict[tuple[str, str], float] = {}
+    tech_veh: dict[tuple[str, str], str] = {}
+    veh_tech: dict[tuple[str, str], str] = {}
+
+    for a in assignments:
+        job = jobs_lookup[a.job_id]
+        _commit_slot(
+            a.tech_id, a.vehicle_id, a.day, job,
+            stop_count, service_mins, tech_veh, veh_tech,
+        )
+
+    return {
+        "stop_count": stop_count,
+        "service_mins": service_mins,
+        "tech_veh": tech_veh,
+        "veh_tech": veh_tech,
+    }
