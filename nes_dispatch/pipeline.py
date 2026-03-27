@@ -13,6 +13,7 @@ from .data.models import (
     Exclusion,
     Job,
     ReviewFlag,
+    RouteResult,
     ScheduleAssignment,
     Technician,
     Vehicle,
@@ -22,6 +23,7 @@ from .rules.scoring import ScoredJob, score_jobs
 from .rules.slot_selection import find_best_eligible_slot, first_failing_rule
 from .rules.helpers import find_helper
 from .rules.workload import check_workload
+from .routing.nearest_neighbour import build_route
 
 
 # ── Geo helper ──────────────────────────────────────────────────────────────
@@ -512,3 +514,60 @@ def run_phase1_schedule(
     )
 
     return assignments, exclusions, workload_flags
+
+
+# ── Stage 6: Phase 2 — Order Stops ──────────────────────────────────────────
+
+
+def run_phase2_routing(
+    assignments: list[ScheduleAssignment],
+    technicians: list[Technician],
+    vehicles: list[Vehicle],
+    jobs_lookup: dict[str, Job],
+    config: dict[str, Any],
+) -> tuple[list[RouteResult], list[Exclusion], list[ReviewFlag]]:
+    """Phase 2 nearest-neighbour routing for every (tech, vehicle, day) bundle.
+
+    1. Group Phase 1 assignments by (tech_id, vehicle_id, day).
+    2. For each group, build an NN route with feasibility verification.
+    3. Collect ROUTE_DROP exclusions and CROSS_AREA / NO_FEASIBLE flags.
+
+    Returns (routes, exclusions, review_flags).
+    """
+    tech_map = {t.tech_id: t for t in technicians}
+    veh_map = {v.vehicle_id: v for v in vehicles}
+
+    # Group assignments by (tech, vehicle, day)
+    bundles: dict[tuple[str, str, str], list[Job]] = {}
+    for a in assignments:
+        key = (a.tech_id, a.vehicle_id, a.day)
+        job = jobs_lookup.get(a.job_id)
+        if job is not None:
+            bundles.setdefault(key, []).append(job)
+
+    routes: list[RouteResult] = []
+    exclusions: list[Exclusion] = []
+    flags: list[ReviewFlag] = []
+
+    for (tech_id, veh_id, day), bundle_jobs in sorted(bundles.items()):
+        tech = tech_map[tech_id]
+        veh = veh_map[veh_id]
+
+        route, dropped_ids, route_flags = build_route(
+            tech, veh, day, bundle_jobs, config,
+        )
+
+        routes.append(route)
+        flags.extend(route_flags)
+
+        for jid in dropped_ids:
+            exclusions.append(Exclusion(
+                job_id=jid,
+                reason_code="ROUTE_DROP",
+                detail=(
+                    f"Phase-1-scheduled job dropped during Phase 2 routing "
+                    f"for {tech_id}/{veh_id}/{day}"
+                ),
+            ))
+
+    return routes, exclusions, flags

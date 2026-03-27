@@ -1,6 +1,6 @@
 PYTHON = .venv/Scripts/python.exe
 
-.PHONY: all test test-load test-exclude test-special test-phase1 venv clean
+.PHONY: all test test-load test-exclude test-special test-phase1 test-phase2 venv clean
 
 all: test
 
@@ -8,7 +8,7 @@ venv:
 	py -3 -m venv .venv
 	$(PYTHON) -m pip install --upgrade pip
 
-test: test-load test-exclude test-special test-phase1
+test: test-load test-exclude test-special test-phase1 test-phase2
 	@echo ============================================================
 	@echo   ALL TEST SUITES PASSED
 	@echo ============================================================
@@ -24,6 +24,9 @@ test-special:
 
 test-phase1:
 	$(PYTHON) test_phase1.py
+
+test-phase2:
+	$(PYTHON) test_phase2.py
 
 clean:
 	find . -type d -name __pycache__ -exec rm -rf {} +
