@@ -12,11 +12,16 @@ from typing import Any
 from .data.models import (
     Exclusion,
     Job,
+    ReviewFlag,
     ScheduleAssignment,
     Technician,
     Vehicle,
     WeeklyException,
 )
+from .rules.scoring import ScoredJob, score_jobs
+from .rules.slot_selection import find_best_eligible_slot, first_failing_rule
+from .rules.helpers import find_helper
+from .rules.workload import check_workload
 
 
 # ── Geo helper ──────────────────────────────────────────────────────────────
@@ -396,3 +401,114 @@ def compute_consumed_capacity(
         "tech_veh": tech_veh,
         "veh_tech": veh_tech,
     }
+
+
+# ── Stage 5: Phase 1 — Score & Schedule ─────────────────────────────────────
+
+
+def run_phase1_schedule(
+    normal_jobs: list[Job],
+    technicians: list[Technician],
+    vehicles: list[Vehicle],
+    config: dict[str, Any],
+    consumed_capacity: dict[str, Any],
+    area_assigned_counts: dict[str, int] | None = None,
+    prohibited_pairs: set[tuple[str, str]] | None = None,
+) -> tuple[list[ScheduleAssignment], list[Exclusion], list[ReviewFlag]]:
+    """Phase 1 rules-based score-and-assign scheduling.
+
+    1. Score all normal jobs.
+    2. Sort by (-score, -age_days, -value).
+    3. Greedy assign: for each job find the best eligible slot.
+    4. Helper pass: for helper-needed jobs, find a second tech.
+    5. Workload review: generate TECH_OVERLOAD / VEH_BOTTLENECK flags.
+
+    Returns (assignments, exclusions, workload_flags).
+    """
+    if prohibited_pairs is None:
+        prohibited_pairs = set()
+
+    # Unpack mutable capacity state (seeded from special-route assignments)
+    stop_count: dict[tuple[str, str], int] = dict(
+        consumed_capacity.get("stop_count", {})
+    )
+    service_mins: dict[tuple[str, str], float] = dict(
+        consumed_capacity.get("service_mins", {})
+    )
+    tech_veh: dict[tuple[str, str], str] = dict(
+        consumed_capacity.get("tech_veh", {})
+    )
+    veh_tech: dict[tuple[str, str], str] = dict(
+        consumed_capacity.get("veh_tech", {})
+    )
+
+    # ── 1. Score ────────────────────────────────────────────────────
+    scored = score_jobs(
+        normal_jobs, technicians, config, area_assigned_counts
+    )
+
+    # ── 2. Sort ─────────────────────────────────────────────────────
+    scored.sort(key=lambda s: (-s.score, -s.job.age_days, -s.job.value))
+
+    # ── 3 & 4. Greedy assign + helper pass ──────────────────────────
+    assignments: list[ScheduleAssignment] = []
+    exclusions: list[Exclusion] = []
+
+    for sj in scored:
+        job = sj.job
+        best = find_best_eligible_slot(
+            job, technicians, vehicles, config,
+            stop_count, service_mins, tech_veh, veh_tech,
+            prohibited_pairs,
+        )
+
+        if best is None:
+            reason = first_failing_rule(
+                job, technicians, vehicles, config,
+                stop_count, service_mins, tech_veh, veh_tech,
+                prohibited_pairs,
+            )
+            exclusions.append(Exclusion(
+                job_id=job.job_id,
+                reason_code=reason,
+                detail=f"No eligible slot for job {job.job_id}",
+            ))
+            continue
+
+        tech_id, veh_id, day = best
+
+        # Helper pass for two-man jobs
+        helper_id: str | None = None
+        if job.helper_needed:
+            helper_id = find_helper(
+                job, day, tech_id, technicians, config,
+                service_mins, prohibited_pairs,
+            )
+            if helper_id is None:
+                exclusions.append(Exclusion(
+                    job_id=job.job_id,
+                    reason_code="HELPER_UNAVAIL",
+                    detail=f"No helper tech available for job {job.job_id} on {day}",
+                ))
+                continue
+
+        # Commit the assignment
+        assignments.append(ScheduleAssignment(
+            job_id=job.job_id,
+            tech_id=tech_id,
+            vehicle_id=veh_id,
+            day=day,
+            helper_tech_id=helper_id,
+        ))
+        _commit_slot(
+            tech_id, veh_id, day, job,
+            stop_count, service_mins, tech_veh, veh_tech,
+        )
+
+    # ── 5. Workload review ──────────────────────────────────────────
+    jobs_service_mins = {j.job_id: j.service_time_min for j in normal_jobs}
+    workload_flags = check_workload(
+        assignments, jobs_service_mins, technicians, vehicles, config,
+    )
+
+    return assignments, exclusions, workload_flags
