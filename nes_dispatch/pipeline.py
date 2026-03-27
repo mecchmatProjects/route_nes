@@ -24,6 +24,9 @@ from .rules.slot_selection import find_best_eligible_slot, first_failing_rule
 from .rules.helpers import find_helper
 from .rules.workload import check_workload
 from .routing.nearest_neighbour import build_route
+from .postprocess.standby import select_standby_per_route
+from .postprocess.readiness import compute_area_readiness
+from .postprocess.flags import generate_review_flags
 
 
 # ── Geo helper ──────────────────────────────────────────────────────────────
@@ -571,3 +574,46 @@ def run_phase2_routing(
             ))
 
     return routes, exclusions, flags
+
+
+# ── Stage 7: Post-processing ────────────────────────────────────────────────
+
+
+def run_postprocessing(
+    routes: list[RouteResult],
+    candidate_jobs: list[Job],
+    assignments: list[ScheduleAssignment],
+    technicians: list[Technician],
+    vehicles: list[Vehicle],
+    config: dict[str, Any],
+) -> tuple[
+    dict[tuple[str, str, str], list[str]],   # standby
+    dict[str, str],                           # readiness
+    list[ReviewFlag],                         # flags
+]:
+    """Post-processing: standby ranking, area readiness, review flags.
+
+    Returns (standby, readiness, flags).
+    """
+    # Determine unassigned candidates
+    visited_ids: set[str] = set()
+    for r in routes:
+        visited_ids.update(r.visited_job_ids)
+    unassigned = [j for j in candidate_jobs if j.job_id not in visited_ids]
+
+    # Standby ranking per route
+    standby = select_standby_per_route(
+        routes, unassigned, technicians, vehicles, config,
+    )
+
+    # Area readiness
+    readiness = compute_area_readiness(
+        routes, standby, candidate_jobs, config,
+    )
+
+    # Review flags (DUP_ADDR, WEAK_STANDBY, HELPER_TRAVEL, GEOCODE_OOB)
+    flags = generate_review_flags(
+        candidate_jobs, assignments, technicians, standby, config,
+    )
+
+    return standby, readiness, flags

@@ -9,6 +9,7 @@ if "%1"=="test-exclude" goto test-exclude
 if "%1"=="test-special" goto test-special
 if "%1"=="test-phase1" goto test-phase1
 if "%1"=="test-phase2" goto test-phase2
+if "%1"=="test-postprocess" goto test-postprocess
 if "%1"=="venv" goto venv
 if "%1"=="clean" goto clean
 if "%1"=="help" goto help
@@ -31,6 +32,8 @@ if errorlevel 1 goto fail
 call :test-phase1
 if errorlevel 1 goto fail
 call :test-phase2
+if errorlevel 1 goto fail
+call :test-postprocess
 if errorlevel 1 goto fail
 echo.
 echo ============================================================
@@ -63,6 +66,11 @@ echo --- test_phase2 ---
 %PYTHON% test_phase2.py
 exit /b %errorlevel%
 
+:test-postprocess
+echo --- test_postprocess ---
+%PYTHON% test_postprocess.py
+exit /b %errorlevel%
+
 :clean
 for /d /r %%d in (__pycache__) do @if exist "%%d" rd /s /q "%%d"
 del /s /q *.pyc >nul 2>&1
@@ -79,6 +87,7 @@ echo   test-exclude  Run exclusion ^& exceptions tests
 echo   test-special  Run special routes tests
 echo   test-phase1   Run Phase 1 score ^& schedule tests
 echo   test-phase2   Run Phase 2 routing tests
+echo   test-postprocess  Run post-processing tests
 echo   venv          Create virtual environment
 echo   clean         Remove __pycache__ and .pyc files
 echo   help          Show this message
