@@ -45,7 +45,8 @@ Code should contain deterministic logic that must remain consistent and testable
 - capacity calculations
 - route-building workflow
 - scoring execution
-- map and output generation
+- map generation (implemented in `mapping.py` using OSMnx road-network graphs)
+- output generation
 
 ### Config
 

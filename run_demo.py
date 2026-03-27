@@ -314,6 +314,20 @@ def main() -> None:
     areas_lean = sum(1 for v in readiness.values() if v == "Lean")
     print(f"  Area readiness:     {areas_good} Good, {areas_mod} Moderate, {areas_lean} Lean")
 
+    # ── Stage 7: Route Maps ─────────────────────────────────────────
+    header("STAGE 7 — Route Maps (osmnx)")
+    print("  Drawing road-network maps for each route...")
+    try:
+        from nes_dispatch.mapping import draw_all_routes
+
+        draw_all_routes(
+            routes, wd.technicians, jobs_lookup,
+            show=True,
+        )
+    except Exception as exc:
+        print(f"  Map drawing failed: {exc}")
+        print("  (Requires internet for initial OSM download.)")
+
 
 if __name__ == "__main__":
     main()

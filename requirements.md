@@ -135,6 +135,7 @@ The Python engine must be independently understandable and testable. It should c
 
 - The engine shall generate a plotted map for each proposed route/day.
 - Maps are a required review artifact.
+- **Implemented:** `nes_dispatch/mapping.py` renders per-route PNG maps using OSMnx road-network graphs and Matplotlib. Each map shows road-following colored route segments, a red depot marker, and green stop markers. `save_maps.py` writes output to `output/maps/`.
 
 ## 6. Data and Configuration Requirements
 

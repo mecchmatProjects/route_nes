@@ -20,10 +20,10 @@ with a reviewable, reproducible plan**. Anything beyond this scope belongs in Ve
 | **Phase 2 — Nearest-neighbour routing** | Nearest-neighbour stop ordering + feasibility verification (time, capacity, distance). Drop and re-sequence if constraints violated. | Turns an abstract schedule into a drivable stop sequence. Transparent: "go to the closest unvisited stop." |
 | **Post-processing** | Standby ranking, area-readiness score, review flags (9 active codes), exclusion report (11 reason codes). | Owner sees a one-page summary of any problems before approving the plan. |
 | **Config file** | Single `config.json` with T_max, P, R, r, seasonal weight profiles, workload-review thresholds. Schema-validated on load. | Tunable without code changes; version-controlled for reproducibility. |
-| **Output artefacts** | Per-route JSON, flags JSON, exclusions JSON, simple text summary. | Machine-readable for Make/Zapier automation; human-readable for the owner. |
-| **Integration test** | One end-to-end test on example CSVs: validation → Phase 1 → Phase 2 → outputs. Golden-file comparison for deterministic runs. | Proves the pipeline works before it touches real data. |
+| **Output artefacts** | Per-route JSON, flags JSON, exclusions JSON, simple text summary, PNG route maps (one per route/day via `mapping.py`). | Machine-readable for Make/Zapier automation; human-readable for the owner. Route maps give instant visual sanity-check. |
+| **Map rendering** | Per-route PNG maps using OSMnx road-network graphs, Matplotlib rendering. Road-following paths, colored route segments, depot and stop markers. Implemented in `nes_dispatch/mapping.py`. | Visual review artefact; lets the owner confirm geographic sanity at a glance. |
 
-### What is OUT of Version 1
+| **Integration test** | One end-to-end test on example CSVs: validation → Phase 1 → Phase 2 → outputs. Golden-file comparison for deterministic runs. | Proves the pipeline works before it touches real data. |
 
 | Deferred feature | Reason |
 |---|---|
@@ -34,7 +34,7 @@ with a reviewable, reproducible plan**. Anything beyond this scope belongs in Ve
 | **Appointment-time optimisation** | Requires customer preference data not currently in ServiceM8. |
 | **Real-time traffic integration** | Google Maps API cost + latency. Static OSMnx/Haversine distances are adequate for weekly planning. |
 | **Multi-week rolling horizon** | Needs historical job-outcome data for meaningful look-ahead. |
-| **Map rendering** | Nice to have; the text / JSON output is sufficient for the owner to review routes. Can be added as a thin `output.py` extension later. |
+### What is OUT of Version 1
 
 ### Version 1 success criteria
 

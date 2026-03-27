@@ -38,14 +38,15 @@ nes_dispatch/
 │   └── workload.py           # Workload-review flags (no job movement)
 │
 ├── routing/                  # ── Phase 2 ──
-│   ├── distance.py           # OSMnx / Haversine distance computation
+│   ├── distance.py           # Haversine distance computation
 │   └── nearest_neighbour.py  # NN stop ordering + feasibility verification
 │
 ├── postprocess/
 │   ├── standby.py            # Standby job ranking
 │   ├── readiness.py          # Area readiness computation (Good / Moderate / Lean)
-│   └── output.py             # Route maps, text summaries, JSON artefacts
+│   └── flags.py              # Review flags (9 active codes, 3 severity levels)
 │
+├── mapping.py                # Route map rendering (OSMnx road graphs + Matplotlib)
 ├── config.py                 # Loads JSON/YAML config; merges Airtable overrides
 └── pipeline.py               # Top-level orchestrator (the 9-step weekly pipeline)
 ```
@@ -57,7 +58,7 @@ nes_dispatch/
 | **Pure functions** | Every stage is `f(inputs, config) → outputs`. No global state. |
 | **Named rules** | Every scheduling decision traces to a named rule (e.g. `SKILL_MATCH`, `CAPACITY_OK`) and the data that triggered it. |
 | **Deterministic** | Same inputs + config → identical outputs. No random seeds, no stochastic components. |
-| **I/O at the edges** | Only `loaders.py` and `output.py` touch the filesystem or network. |
+| **I/O at the edges** | Only `loaders.py` and `mapping.py` touch the filesystem or network. |
 
 ---
 
