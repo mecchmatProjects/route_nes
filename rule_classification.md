@@ -219,7 +219,7 @@ Use this classification as an **implementation rule** for every new feature or r
 1. **Hard constraints** produce explicit pass/fail. Implement as named eligibility rules in `eligibility.py` or feasibility checks in `nearest_neighbour.py`, or as pre-run checks in `validators.py`. Never silently relax.
 2. **Eligibility filters** run before the scheduling loop. Implement in `eligibility.py`. Each filter maps to a named rule.
 3. **Weighted / preference logic** stays parameterised. Coefficients and tiebreaker rankings live in config (§4.1) or Airtable (§4.2), never hard-coded.
-4. **Review flags** are emitted even when the plan is valid. Add new flags in `output.py`; assign a code, severity, and human-readable message.
+4. **Review flags** are emitted even when the plan is valid. Add new flags in `flags.py`; assign a code, severity, and human-readable message.
 5. **Owner-controlled policy** must not be hard-coded into the planning core. If the owner might want to change it, it belongs in config or Airtable.
 6. **Exclusion reason codes** must cover every possible reason a job is not assigned. If a new exclusion path is added, a new reason code must be registered.
 
@@ -233,4 +233,4 @@ When adding or modifying a rule, answer these questions:
 | Does it narrow who/what can be combined? | It is an **eligibility filter** (§2). Update `eligibility.py`. |
 | Does it make some options more attractive? | It is **weighted logic** (§3). Add a coefficient to config. |
 | Should the owner be able to change it? | It is a **policy input** (§4). Put it in config or Airtable. |
-| Should the owner see it after a run? | It is a **review flag or exclusion code** (§5). Register in `output.py`. |
+| Should the owner see it after a run? | It is a **review flag or exclusion code** (§5). Register in `flags.py`. |
