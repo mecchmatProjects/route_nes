@@ -63,7 +63,22 @@ _veh_a = Vehicle("V-A", "van", ["boiler_service"], ["Mon", "Tue"], 450.0, 0.001,
 
 def _job(jid, lat=43.21, lon=-71.51, area="A-1", addr="123 Main St",
          route_type="normal", helper=False, age=10, value=100.0, svc=45.0):
-    return Job(jid, addr, lat, lon, area, route_type, helper, age, value, svc, "candidate")
+    """Build a synthetic Job for testing. Maps legacy route_type/helper to new fields."""
+    # Map route_type hint to a job_category the model will derive back
+    if route_type == "radiator":
+        cat = "Radiator Replacement"
+    elif route_type == "helper" or helper:
+        cat = "New Equipment Installation Other Than Boiler"
+    else:
+        cat = "Service Call"
+    queue = "Normal jobs"
+    hrs = svc / 60.0 if svc else 1.0
+    return Job(
+        job_id=jid, address=addr, city="TestCity", state="RI",
+        area_id=area, area_name=area, job_category=cat, queue=queue,
+        latitude=lat, longitude=lon, created_date="2026-03-01",
+        age_days=age, required_job_hours=hrs,
+    )
 
 passed = 0
 

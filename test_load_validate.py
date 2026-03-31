@@ -71,19 +71,19 @@ print(f"TEST 4 PASS — duplicate PK detected: {dup_errs[0]}")
 
 # ── Test 5: bad referential integrity ───────────────────────────────────────
 wd5 = copy.deepcopy(wd)
-wd5.exceptions[0].scope_id = "T-GHOST"
+wd5.exceptions[0].tech_or_slot = "T-GHOST"
 errors = validate_inputs(wd5, config)
 ref_errs = [e for e in errors if "REF_INTEGRITY" in e]
 assert ref_errs, f"Expected REF_INTEGRITY, got: {errors}"
 print(f"TEST 5 PASS — bad ref detected: {ref_errs[0]}")
 
-# ── Test 6: invalid route_type ──────────────────────────────────────────────
+# ── Test 6: invalid job_category ────────────────────────────────────────────
 wd6 = copy.deepcopy(wd)
-wd6.jobs[0].route_type = "bogus"
+wd6.jobs[0].job_category = "Bogus Category"
 errors = validate_inputs(wd6, config)
-type_errs = [e for e in errors if "INVALID_ROUTE_TYPE" in e]
-assert type_errs, f"Expected INVALID_ROUTE_TYPE, got: {errors}"
-print(f"TEST 6 PASS — invalid route_type detected: {type_errs[0]}")
+type_errs = [e for e in errors if "INVALID_CATEGORY" in e]
+assert type_errs, f"Expected INVALID_CATEGORY, got: {errors}"
+print(f"TEST 6 PASS — invalid job_category detected: {type_errs[0]}")
 
 # ── Test 7: config range violation ──────────────────────────────────────────
 bad_config2 = dict(config)

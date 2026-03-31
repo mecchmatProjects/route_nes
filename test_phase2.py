@@ -54,8 +54,15 @@ _tech = Technician("T-A", "Alice", ["boiler_service"], 43.20, -71.50, ["Mon"])
 _veh = Vehicle("V-A", "van", ["boiler_service"], ["Mon"], 450.0, 0.001, 10)
 
 def _job(jid, lat, lon, svc=45.0):
-    return Job(jid, "addr", lat, lon, "A-1", "normal", False,
-               10, 100.0, svc, "candidate")
+    hrs = svc / 60.0 if svc else 1.0
+    # Use a required-hours category so planned_hours respects the svc param
+    return Job(
+        job_id=jid, address="addr", city="TestCity", state="RI",
+        area_id="A-1", area_name="A-1",
+        job_category="Vent / Trap / Repair / Piping Work",
+        queue="Normal jobs", latitude=lat, longitude=lon,
+        created_date="2026-03-01", age_days=10, required_job_hours=hrs,
+    )
 
 passed = 0
 

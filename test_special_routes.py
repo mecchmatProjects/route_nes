@@ -39,17 +39,18 @@ special, normal = split_special_routes(candidates)
 special_ids = {j.job_id for j in special}
 normal_ids = {j.job_id for j in normal}
 
-# Radiator: J-011, J-022  |  NH overnight: J-009, J-019  |  Helper: J-016, J-024
-assert "J-011" in special_ids, "Radiator J-011 should be special"
-assert "J-022" in special_ids, "Radiator J-022 should be special"
-assert "J-009" in special_ids, "NH overnight J-009 should be special"
-assert "J-019" in special_ids, "NH overnight J-019 should be special"
-assert "J-016" in special_ids, "Helper J-016 should be special"
-assert "J-024" in special_ids, "Helper J-024 should be special"
+# Radiator jobs: SM8-30402 (Replacement), SM8-30405 (Pick-Up), SM8-30411 (Refinishing),
+#                SM8-30440 (Service), SM8-30451 (Replace & Refinish)
+# Helper/Two-Man: SM8-50101 (New Equipment, Accepted Quotes), SM8-50102 (Castrads)
+# SM8-20319 is Accepted Quotes → treated as Two-Man (helper_needed)
+for rid in ["SM8-30402", "SM8-30405", "SM8-30411", "SM8-30440", "SM8-30451"]:
+    assert rid in special_ids, f"Radiator {rid} should be special"
+for hid in ["SM8-50101", "SM8-50102", "SM8-20319"]:
+    assert hid in special_ids, f"Helper/Two-Man {hid} should be special"
 
 # Normal jobs should not appear in special
-assert "J-001" in normal_ids
-assert "J-002" in normal_ids
+assert "SM8-10452" in normal_ids
+assert "SM8-10510" in normal_ids
 
 assert len(special) + len(normal) == len(candidates)
 print(f"TEST 1 PASS — split: {len(special)} special, {len(normal)} normal")

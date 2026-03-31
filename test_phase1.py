@@ -99,8 +99,12 @@ print("  [PASS] Test 3: sorted order is correct")
 # Build a synthetic job/tech/veh for targeted rule testing
 _t = Technician("T-SYN", "Syn", ["boiler_service"], 43.2, -71.5, ["Mon", "Tue"])
 _v = Vehicle("V-SYN", "van", ["boiler_service"], ["Mon", "Tue"], 450, 0.001, 10)
-_j = Job("J-SYN", "123 Test St", 43.21, -71.51, "A-SYN", "normal",
-         False, 10, 100.0, 45.0, "candidate")
+_j = Job(
+    job_id="J-SYN", address="123 Test St", city="TestCity", state="RI",
+    area_id="01", area_name="A-SYN", job_category="Service Call",
+    queue="Normal jobs", latitude=43.21, longitude=-71.51,
+    created_date="2026-03-01", age_days=10,
+)
 
 assert tech_available("Mon", _t) is True
 assert tech_available("Wed", _t) is False
@@ -165,8 +169,13 @@ passed += 1
 print(f"  [PASS] Test 9: first_failing_rule → {reason}")
 
 # ═══ Test 10: helper assignment ══════════════════════════════════════════════
-_j_helper = Job("J-HLP", "456 Help St", 43.21, -71.51, "A-SYN", "normal",
-                True, 5, 200.0, 60.0, "candidate")
+_j_helper = Job(
+    job_id="J-HLP", address="456 Help St", city="TestCity", state="RI",
+    area_id="01", area_name="A-SYN",
+    job_category="New Equipment Installation Other Than Boiler",
+    queue="Normal jobs", latitude=43.21, longitude=-71.51,
+    created_date="2026-03-20", age_days=5, required_job_hours=2.0,
+)
 _t2 = Technician("T-HLP", "Helper", ["boiler_service", "install"], 43.22, -71.52, ["Mon"])
 helper_id = find_helper(
     _j_helper, "Mon", "T-SYN", [_t, _t2], config, {},

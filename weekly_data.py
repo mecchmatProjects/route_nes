@@ -3,6 +3,10 @@
 weekly_data.py — Create, read, and validate weekly planning data files
 for the NES dispatch-routing engine.
 
+Aligned with the NES Python Scheduling Engine Build Spec v7 four-payload
+input contract: Candidate Jobs, Weekly Context, Weekly Exceptions,
+Lookup / Rules Data.
+
 Supports two modes:
   1. Offline / file-based:  read example CSVs from data/ folder.
   2. ServiceM8 live pull:   fetch jobs via ServiceM8 REST API and write CSVs.
@@ -34,17 +38,35 @@ import requests
 # ---------------------------------------------------------------------------
 DATA_DIR = Path(__file__).parent / "data"
 
-FILES = { 
+FILES = {
     "jobs": DATA_DIR / "example_jobs.csv",
     "technicians": DATA_DIR / "example_technicians.csv",
     "vehicles": DATA_DIR / "example_vehicles.csv",
     "exceptions": DATA_DIR / "example_weekly_exceptions.csv",
+    "context": DATA_DIR / "example_weekly_context.csv",
+    "area_rules": DATA_DIR / "example_area_rules.csv",
 }
 
 SERVICEM8_API = "https://api.servicem8.com/api_1.0"
 
-ROUTE_TYPES = {"normal", "radiator", "nh_overnight", "helper"}
 VALID_DAYS = {"Mon", "Tue", "Wed", "Thu", "Fri"}
+VALID_FULL_DAYS = {"Monday", "Tuesday", "Wednesday", "Thursday", "Friday"}
+
+# Job categories per spec addendum Table 7
+FIXED_HOUR_CATEGORIES = {
+    "Boiler Maintenance": 1.0,
+    "Estimate": 1.0,
+    "Go Back": 1.0,
+    "New Boiler Visit": 1.0,
+    "Radiator Pick-Up": 1.0,
+    "Radiator Service": 1.0,
+    "Service Call": 1.0,
+    "Steam System Inspection": 1.0,
+}
+
+ELIGIBLE_QUEUES = {"Priority", "Accepted Quotes", "Requested Scheduling", "Normal jobs"}
+EXCLUDED_QUEUES = {"Urgent", "On Hold"}
+
 
 # ---------------------------------------------------------------------------
 # Domain dataclasses
@@ -52,17 +74,27 @@ VALID_DAYS = {"Mon", "Tue", "Wed", "Thu", "Fri"}
 
 @dataclass
 class Job:
+    """Candidate Jobs payload (spec §14.1 / addendum Table 3)."""
     job_id: str
     address: str
+    city: str
+    state: str
+    area_id: str
+    area_name: str
+    job_category: str
+    queue: str
     latitude: float
     longitude: float
-    area_id: str
-    route_type: str  # normal | radiator | nh_overnight | helper
-    helper_needed: bool
+    created_date: str
     age_days: int
-    value: float
-    service_time_min: float  # on-site service duration (minutes)
-    status: str  # candidate | excluded | assigned
+    required_job_hours: Optional[float] = None
+    radiator_count: Optional[int] = None
+    refinisher_location: str = ""
+    avg_wait_2x_flag: bool = False
+    rebook_count_with_notes: int = 0
+    rebook_count_without_notes: int = 0
+    scheduling_preference: str = ""
+    total_job_amount: Optional[float] = None
     description: str = ""
 
 
@@ -82,19 +114,39 @@ class Vehicle:
     vehicle_type: str
     capability_tags: List[str]
     available_days: List[str]
-    speed_mpm: float  # metres per minute
-    cost_per_metre: float  # $/m
-    capacity: int  # max stops per route
+    speed_mpm: float = 500.0
+    cost_per_metre: float = 0.0003
+    capacity: int = 14
+
+
+@dataclass
+class WeeklyContext:
+    """Weekly Context payload (addendum Table 4)."""
+    week_of: str
+    season: str
+    include_v4: bool
+    helpers_available: int = 2
+    holiday_list: str = ""
 
 
 @dataclass
 class WeeklyException:
+    """Weekly Exceptions payload (addendum Table 5)."""
     exception_id: str
-    scope_type: str  # technician | vehicle
-    scope_id: str
-    day: str
-    effect_type: str  # unavailable | partial
-    effect_value: str
+    week_of: str
+    tech_or_slot: str
+    exception_type: str
+    affected_day: str
+    notes: str = ""
+
+
+@dataclass
+class AreaRule:
+    """Lookup / Rules Data payload (addendum Table 6)."""
+    lookup_item: str
+    lookup_type: str
+    rule_value: str
+    active: bool = True
 
 
 @dataclass
@@ -104,6 +156,8 @@ class WeeklyData:
     technicians: List[Technician] = field(default_factory=list)
     vehicles: List[Vehicle] = field(default_factory=list)
     exceptions: List[WeeklyException] = field(default_factory=list)
+    context: Optional[WeeklyContext] = None
+    area_rules: List[AreaRule] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -129,22 +183,60 @@ def _parse_list(raw: str) -> List[str]:
     return [s.strip() for s in raw.split(",") if s.strip()]
 
 
+def _parse_bool(raw: str) -> bool:
+    return raw.strip().upper() in ("1", "TRUE", "YES")
+
+
+def _parse_opt_float(raw: str) -> Optional[float]:
+    raw = raw.strip()
+    if not raw:
+        return None
+    return float(raw)
+
+
+def _parse_opt_int(raw: str) -> Optional[int]:
+    raw = raw.strip()
+    if not raw:
+        return None
+    return int(raw)
+
+
 def load_jobs(path: Path) -> List[Job]:
     jobs = []
     with open(path, newline="", encoding="utf-8") as f:
         for row in csv.DictReader(f):
+            # Graceful geocode handling (spec §14.2)
+            lat_raw = row.get("latitude", "").strip()
+            lon_raw = row.get("longitude", "").strip()
+            if not lat_raw or not lon_raw:
+                continue  # skip job; surfaced via communications
+            try:
+                lat = float(lat_raw)
+                lon = float(lon_raw)
+            except ValueError:
+                continue
+
             jobs.append(Job(
                 job_id=row["job_id"],
                 address=row["address"],
-                latitude=float(row["latitude"]),
-                longitude=float(row["longitude"]),
+                city=row["city"],
+                state=row["state"],
                 area_id=row["area_id"],
-                route_type=row["route_type"],
-                helper_needed=bool(int(row["helper_needed"])),
+                area_name=row["area_name"],
+                job_category=row["job_category"],
+                queue=row["queue"],
+                latitude=lat,
+                longitude=lon,
+                created_date=row.get("created_date", ""),
                 age_days=int(row["age_days"]),
-                value=float(row["value"]),
-                service_time_min=float(row.get("service_time_min", 30)),
-                status=row["status"],
+                required_job_hours=_parse_opt_float(row.get("required_job_hours", "")),
+                radiator_count=_parse_opt_int(row.get("radiator_count", "")),
+                refinisher_location=row.get("refinisher_location", ""),
+                avg_wait_2x_flag=_parse_bool(row.get("avg_wait_2x_flag", "0")),
+                rebook_count_with_notes=int(row.get("rebook_count_with_notes", "0") or 0),
+                rebook_count_without_notes=int(row.get("rebook_count_without_notes", "0") or 0),
+                scheduling_preference=row.get("scheduling_preference", ""),
+                total_job_amount=_parse_opt_float(row.get("total_job_amount", "")),
                 description=row.get("description", ""),
             ))
     return jobs
@@ -181,29 +273,63 @@ def load_vehicles(path: Path) -> List[Vehicle]:
     return vehicles
 
 
+def load_context(path: Path) -> Optional[WeeklyContext]:
+    if not path.exists():
+        return None
+    with open(path, newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    if not rows:
+        return None
+    r = rows[0]
+    return WeeklyContext(
+        week_of=r["week_of"],
+        season=r["season"],
+        include_v4=_parse_bool(r["include_v4"]),
+        helpers_available=int(r.get("helpers_available", 2) or 2),
+        holiday_list=r.get("holiday_list", ""),
+    )
+
+
 def load_exceptions(path: Path) -> List[WeeklyException]:
     exceptions = []
     with open(path, newline="", encoding="utf-8") as f:
         for row in csv.DictReader(f):
             exceptions.append(WeeklyException(
                 exception_id=row["exception_id"],
-                scope_type=row["scope_type"],
-                scope_id=row["scope_id"],
-                day=row["day"],
-                effect_type=row["effect_type"],
-                effect_value=row["effect_value"],
+                week_of=row["week_of"],
+                tech_or_slot=row["tech_or_slot"],
+                exception_type=row["exception_type"],
+                affected_day=row["affected_day"],
+                notes=row.get("notes", ""),
             ))
     return exceptions
 
 
+def load_area_rules(path: Path) -> List[AreaRule]:
+    if not path.exists():
+        return []
+    rules = []
+    with open(path, newline="", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            rules.append(AreaRule(
+                lookup_item=row["lookup_item"],
+                lookup_type=row["lookup_type"],
+                rule_value=row["rule_value"],
+                active=_parse_bool(row.get("active", "1")),
+            ))
+    return rules
+
+
 def load_weekly_data(data_dir: Optional[Path] = None) -> WeeklyData:
-    """Load all four CSV files from *data_dir* and return a WeeklyData."""
+    """Load all CSV files from *data_dir* and return a WeeklyData."""
     d = data_dir or DATA_DIR
     return WeeklyData(
         jobs=load_jobs(d / "example_jobs.csv"),
         technicians=load_technicians(d / "example_technicians.csv"),
         vehicles=load_vehicles(d / "example_vehicles.csv"),
         exceptions=load_exceptions(d / "example_weekly_exceptions.csv"),
+        context=load_context(d / "example_weekly_context.csv"),
+        area_rules=load_area_rules(d / "example_area_rules.csv"),
     )
 
 
@@ -211,16 +337,28 @@ def load_weekly_data(data_dir: Optional[Path] = None) -> WeeklyData:
 # CSV writers (used by --generate and --servicem8)
 # ---------------------------------------------------------------------------
 
+JOB_COLS = [
+    "job_id", "address", "city", "state", "area_id", "area_name",
+    "job_category", "queue", "latitude", "longitude", "created_date",
+    "age_days", "required_job_hours", "radiator_count", "refinisher_location",
+    "avg_wait_2x_flag", "rebook_count_with_notes", "rebook_count_without_notes",
+    "scheduling_preference", "total_job_amount", "description",
+]
+
+
 def write_jobs(jobs: List[Job], path: Path) -> None:
-    cols = ["job_id", "address", "latitude", "longitude", "area_id",
-            "route_type", "helper_needed", "age_days", "value",
-            "service_time_min", "status", "description"]
     with open(path, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=cols)
+        w = csv.DictWriter(f, fieldnames=JOB_COLS)
         w.writeheader()
         for j in jobs:
             row = asdict(j)
-            row["helper_needed"] = int(row["helper_needed"])
+            row["avg_wait_2x_flag"] = str(row["avg_wait_2x_flag"]).upper()
+            if row["required_job_hours"] is None:
+                row["required_job_hours"] = ""
+            if row["radiator_count"] is None:
+                row["radiator_count"] = ""
+            if row["total_job_amount"] is None:
+                row["total_job_amount"] = ""
             w.writerow(row)
 
 
@@ -249,14 +387,35 @@ def write_vehicles(vehicles: List[Vehicle], path: Path) -> None:
             w.writerow(row)
 
 
+def write_context(ctx: WeeklyContext, path: Path) -> None:
+    cols = ["week_of", "season", "include_v4", "helpers_available", "holiday_list"]
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=cols)
+        w.writeheader()
+        row = asdict(ctx)
+        row["include_v4"] = str(row["include_v4"]).upper()
+        w.writerow(row)
+
+
 def write_exceptions(exceptions: List[WeeklyException], path: Path) -> None:
-    cols = ["exception_id", "scope_type", "scope_id", "day",
-            "effect_type", "effect_value"]
+    cols = ["exception_id", "week_of", "tech_or_slot", "exception_type",
+            "affected_day", "notes"]
     with open(path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=cols)
         w.writeheader()
         for e in exceptions:
             w.writerow(asdict(e))
+
+
+def write_area_rules(rules: List[AreaRule], path: Path) -> None:
+    cols = ["lookup_item", "lookup_type", "rule_value", "active"]
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=cols)
+        w.writeheader()
+        for r in rules:
+            row = asdict(r)
+            row["active"] = str(row["active"]).upper()
+            w.writerow(row)
 
 
 def write_weekly_data(wd: WeeklyData, data_dir: Optional[Path] = None) -> None:
@@ -266,8 +425,14 @@ def write_weekly_data(wd: WeeklyData, data_dir: Optional[Path] = None) -> None:
     write_technicians(wd.technicians, d / "example_technicians.csv")
     write_vehicles(wd.vehicles, d / "example_vehicles.csv")
     write_exceptions(wd.exceptions, d / "example_weekly_exceptions.csv")
+    if wd.context:
+        write_context(wd.context, d / "example_weekly_context.csv")
+    if wd.area_rules:
+        write_area_rules(wd.area_rules, d / "example_area_rules.csv")
     print(f"Wrote {len(wd.jobs)} jobs, {len(wd.technicians)} techs, "
-          f"{len(wd.vehicles)} vehicles, {len(wd.exceptions)} exceptions → {d}")
+          f"{len(wd.vehicles)} vehicles, {len(wd.exceptions)} exceptions, "
+          f"{'1 context' if wd.context else 'no context'}, "
+          f"{len(wd.area_rules)} area rules → {d}")
 
 
 # ---------------------------------------------------------------------------
@@ -278,30 +443,39 @@ def validate(wd: WeeklyData) -> List[str]:
     """Return a list of warning/error strings. Empty list = valid."""
     issues: List[str] = []
 
+    tech_names = {t.name for t in wd.technicians}
     tech_ids = {t.tech_id for t in wd.technicians}
-    vehicle_ids = {v.vehicle_id for v in wd.vehicles}
+    valid_refs = tech_names | tech_ids
 
     for j in wd.jobs:
-        if j.route_type not in ROUTE_TYPES:
-            issues.append(f"{j.job_id}: unknown route_type '{j.route_type}'")
-        if j.value < 0:
-            issues.append(f"{j.job_id}: negative value {j.value}")
+        if j.queue not in ELIGIBLE_QUEUES and j.queue not in EXCLUDED_QUEUES:
+            issues.append(f"{j.job_id}: unknown queue '{j.queue}'")
+        if j.age_days < 0:
+            issues.append(f"{j.job_id}: negative age {j.age_days}")
 
     for ex in wd.exceptions:
-        if ex.scope_type == "technician" and ex.scope_id not in tech_ids:
-            issues.append(f"{ex.exception_id}: unknown tech {ex.scope_id}")
-        if ex.scope_type == "vehicle" and ex.scope_id not in vehicle_ids:
-            issues.append(f"{ex.exception_id}: unknown vehicle {ex.scope_id}")
-        if ex.day not in VALID_DAYS:
-            issues.append(f"{ex.exception_id}: invalid day '{ex.day}'")
+        if ex.tech_or_slot not in valid_refs:
+            issues.append(f"{ex.exception_id}: unknown tech/slot '{ex.tech_or_slot}'")
+        if ex.affected_day not in VALID_FULL_DAYS and ex.affected_day not in VALID_DAYS:
+            issues.append(f"{ex.exception_id}: invalid day '{ex.affected_day}'")
 
-    # Duplicate-address detection
+    # Duplicate-address detection (with 15 Monticello exception)
     addr_groups: dict = {}
     for j in wd.jobs:
-        addr_groups.setdefault(j.address, []).append(j.job_id)
-    for addr, ids in addr_groups.items():
-        if len(ids) > 1:
-            issues.append(f"Duplicate address '{addr}': {ids}")
+        addr_groups.setdefault(j.address, []).append(j)
+    for addr, jlist in addr_groups.items():
+        if len(jlist) > 1:
+            # Spec: multiple radiator replacement slave jobs at 15 Monticello
+            # Providence must never be treated as duplicates
+            if "15 Monticello" in addr and all(
+                "radiator" in j.job_category.lower() or "Radiator" in j.job_category
+                for j in jlist
+            ):
+                continue
+            issues.append(
+                f"Duplicate address '{addr}': "
+                f"{[j.job_id for j in jlist]}"
+            )
 
     return issues
 
@@ -328,22 +502,45 @@ def _sm8_get(endpoint: str) -> list:
     return resp.json()
 
 
-def _classify_route_type(sm8_job: dict) -> str:
-    """Heuristic classification from ServiceM8 job fields."""
+def _map_sm8_category(sm8_job: dict) -> str:
+    """Map ServiceM8 job fields to a spec job_category."""
+    cat = (sm8_job.get("category") or sm8_job.get("job_category") or "").strip()
+    if cat:
+        return cat
     desc = (sm8_job.get("description") or "").lower()
-    cat = (sm8_job.get("job_category_uuid") or "").lower()
+    if "radiator" in desc and "refinish" in desc:
+        return "Radiator Refinishing"
+    if "radiator" in desc and "replace" in desc:
+        return "Radiator Replacement"
     if "radiator" in desc:
-        return "radiator"
-    if "overnight" in desc or "nh" in cat:
-        return "nh_overnight"
-    if "helper" in desc or "install" in desc:
-        return "helper"
-    return "normal"
+        return "Radiator Service"
+    if "boiler" in desc and "new" in desc:
+        return "New Boiler Visit"
+    if "boiler" in desc:
+        return "Boiler Maintenance"
+    if "steam" in desc and "inspection" in desc:
+        return "Steam System Inspection"
+    if "trap" in desc:
+        return "Trap Service"
+    if "insulation" in desc:
+        return "Insulation"
+    if "install" in desc:
+        return "New Equipment Installation Other Than Boiler"
+    return "Service Call"
 
 
-def _needs_helper(sm8_job: dict) -> bool:
-    desc = (sm8_job.get("description") or "").lower()
-    return "helper" in desc or "two-man" in desc or "install" in desc
+def _map_sm8_queue(sm8_job: dict) -> str:
+    """Map ServiceM8 status/queue to spec queue names."""
+    q = (sm8_job.get("queue") or sm8_job.get("status") or "").strip()
+    queue_map = {
+        "urgent": "Urgent",
+        "on hold": "On Hold",
+        "priority": "Priority",
+        "accepted quotes": "Accepted Quotes",
+        "requested scheduling": "Requested Scheduling",
+        "normal": "Normal jobs",
+    }
+    return queue_map.get(q.lower(), "Normal jobs")
 
 
 def fetch_servicem8_jobs() -> List[Job]:
@@ -355,33 +552,33 @@ def fetch_servicem8_jobs() -> List[Job]:
         if status_raw in ("completed", "cancelled", "deleted"):
             continue
 
-        lat = rj.get("geo_latitude")
-        lon = rj.get("geo_longitude")
-        if lat is None or lon is None:
-            # Try job address geocoding fallback fields
-            lat = rj.get("address_latitude")
-            lon = rj.get("address_longitude")
+        lat = rj.get("geo_latitude") or rj.get("address_latitude")
+        lon = rj.get("geo_longitude") or rj.get("address_longitude")
         if lat is None or lon is None:
             continue
-
         try:
             lat, lon = float(lat), float(lon)
         except (TypeError, ValueError):
             continue
 
-        rt = _classify_route_type(rj)
         jobs.append(Job(
             job_id=rj.get("uuid", f"SM8-{idx:04d}"),
             address=rj.get("job_address", ""),
+            city=rj.get("city", ""),
+            state=rj.get("state", "RI"),
+            area_id=rj.get("area_uuid", "00"),
+            area_name=rj.get("area_name", ""),
+            job_category=_map_sm8_category(rj),
+            queue=_map_sm8_queue(rj),
             latitude=lat,
             longitude=lon,
-            area_id=rj.get("area_uuid", "unknown"),
-            route_type=rt,
-            helper_needed=_needs_helper(rj),
-            age_days=0,  # compute externally from created_date if needed
-            value=float(rj.get("total_invoice_amount") or 0),
-            service_time_min=float(rj.get("estimated_duration") or 30),
-            status="candidate",
+            created_date=rj.get("date", ""),
+            age_days=0,  # compute externally from created_date
+            required_job_hours=_parse_opt_float(
+                str(rj.get("required_job_hours") or rj.get("estimated_duration") or "")
+            ),
+            radiator_count=_parse_opt_int(str(rj.get("radiator_count") or "")),
+            refinisher_location=rj.get("refinisher_location", ""),
             description=rj.get("description", ""),
         ))
     return jobs
@@ -415,19 +612,29 @@ def pull_servicem8_weekly(data_dir: Optional[Path] = None) -> WeeklyData:
     techs = fetch_servicem8_staff()
     print(f"  → {len(techs)} active technicians")
 
-    # Vehicles and exceptions are Airtable-managed; use existing files or empty
     d = data_dir or DATA_DIR
     vehicles: List[Vehicle] = []
     exceptions: List[WeeklyException] = []
+    context: Optional[WeeklyContext] = None
+    area_rules: List[AreaRule] = []
+
     veh_path = d / "example_vehicles.csv"
     exc_path = d / "example_weekly_exceptions.csv"
+    ctx_path = d / "example_weekly_context.csv"
+    rules_path = d / "example_area_rules.csv"
+
     if veh_path.exists():
         vehicles = load_vehicles(veh_path)
     if exc_path.exists():
         exceptions = load_exceptions(exc_path)
+    if ctx_path.exists():
+        context = load_context(ctx_path)
+    if rules_path.exists():
+        area_rules = load_area_rules(rules_path)
 
-    wd = WeeklyData(jobs=jobs, technicians=techs,
-                    vehicles=vehicles, exceptions=exceptions)
+    wd = WeeklyData(jobs=jobs, technicians=techs, vehicles=vehicles,
+                    exceptions=exceptions, context=context,
+                    area_rules=area_rules)
     write_weekly_data(wd, d)
     return wd
 
@@ -441,13 +648,26 @@ def print_summary(wd: WeeklyData) -> None:
     print("WEEKLY PLANNING DATA SUMMARY")
     print("=" * 60)
 
+    if wd.context:
+        ctx = wd.context
+        print(f"\nWeekly Context: week_of={ctx.week_of}  season={ctx.season}  "
+              f"V-4={'ON' if ctx.include_v4 else 'OFF'}  "
+              f"helpers={ctx.helpers_available}")
+        if ctx.holiday_list:
+            print(f"  Holidays: {ctx.holiday_list}")
+
     print(f"\nJobs: {len(wd.jobs)}")
-    by_type: dict = {}
+    by_queue: dict = {}
+    by_cat: dict = {}
     for j in wd.jobs:
-        by_type.setdefault(j.route_type, []).append(j)
-    for rt, jlist in sorted(by_type.items()):
-        total_val = sum(j.value for j in jlist)
-        print(f"  {rt:15s}  {len(jlist):3d} jobs  ${total_val:,.0f} total value")
+        by_queue.setdefault(j.queue, []).append(j)
+        by_cat.setdefault(j.job_category, []).append(j)
+    print("  By queue:")
+    for q, jlist in sorted(by_queue.items()):
+        print(f"    {q:25s}  {len(jlist):3d} jobs")
+    print("  By category:")
+    for c, jlist in sorted(by_cat.items()):
+        print(f"    {c:45s}  {len(jlist):3d} jobs")
 
     print(f"\nTechnicians: {len(wd.technicians)}")
     for t in wd.technicians:
@@ -456,13 +676,17 @@ def print_summary(wd: WeeklyData) -> None:
     print(f"\nVehicles: {len(wd.vehicles)}")
     for v in wd.vehicles:
         print(f"  {v.vehicle_id}  {v.vehicle_type:18s}  "
-              f"cap={v.capacity}  v={v.speed_mpm}m/min  c=${v.cost_per_metre}/m  "
-              f"days={','.join(v.available_days)}")
+              f"cap={v.capacity}  days={','.join(v.available_days)}")
 
     print(f"\nWeekly Exceptions: {len(wd.exceptions)}")
     for ex in wd.exceptions:
-        print(f"  {ex.exception_id}  {ex.scope_type}:{ex.scope_id}  "
-              f"{ex.day}  {ex.effect_type} ({ex.effect_value})")
+        print(f"  {ex.exception_id}  {ex.tech_or_slot}  "
+              f"{ex.affected_day}  {ex.exception_type} ({ex.notes})")
+
+    print(f"\nArea Rules: {len(wd.area_rules)}")
+    for rule in wd.area_rules:
+        status = "active" if rule.active else "inactive"
+        print(f"  [{status}] {rule.lookup_item}: {rule.rule_value[:60]}")
 
     issues = validate(wd)
     if issues:
@@ -472,14 +696,14 @@ def print_summary(wd: WeeklyData) -> None:
     else:
         print("\n✓ All validation checks passed.")
 
-    # Distance summary from first technician to all jobs
-    if wd.technicians and wd.jobs:
-        t0 = wd.technicians[0]
-        dists = [(j.job_id, haversine(t0.home_lat, t0.home_lon,
+    # Distance summary from Providence shop to all jobs
+    prov_lat, prov_lon = 41.8180, -71.4350  # Providence shop
+    if wd.jobs:
+        dists = [(j.job_id, haversine(prov_lat, prov_lon,
                                        j.latitude, j.longitude))
                  for j in wd.jobs]
         dists.sort(key=lambda x: x[1])
-        print(f"\nDistances from {t0.name} ({t0.tech_id}):")
+        print(f"\nDistances from Providence shop:")
         for jid, d in dists[:10]:
             print(f"  {jid}  {d/1000:6.1f} km")
         if len(dists) > 10:
@@ -493,108 +717,168 @@ def print_summary(wd: WeeklyData) -> None:
 def generate_example_data() -> WeeklyData:
     """Build example data programmatically and write to data/ folder."""
     jobs = [
-        Job("J-001", "123 Main St Concord NH", 43.2081, -71.5376, "Area-1",
-            "normal", False, 14, 250.0, 30, "candidate", "Annual boiler service"),
-        Job("J-002", "456 Elm St Manchester NH", 42.9956, -71.4548, "Area-2",
-            "normal", False, 7, 180.0, 25, "candidate", "Steam trap inspection"),
-        Job("J-003", "789 Broadway Nashua NH", 42.7654, -71.4676, "Area-3",
-            "normal", False, 21, 320.0, 45, "candidate", "Radiator valve replacement"),
-        Job("J-004", "12 Oak Ave Concord NH", 43.2120, -71.5420, "Area-1",
-            "normal", False, 3, 150.0, 20, "candidate", "Thermostat calibration"),
-        Job("J-005", "88 Pine Rd Derry NH", 42.8806, -71.3273, "Area-2",
-            "normal", False, 30, 410.0, 60, "candidate", "Full system flush"),
-        Job("J-006", "34 Maple Dr Bedford NH", 42.9465, -71.5158, "Area-2",
-            "normal", False, 12, 220.0, 25, "candidate", "Pressure relief valve test"),
-        Job("J-007", "56 Cedar Ln Merrimack NH", 42.8615, -71.4935, "Area-3",
-            "normal", False, 9, 190.0, 30, "candidate", "Zone valve repair"),
-        Job("J-008", "901 River Rd Bow NH", 43.1328, -71.5384, "Area-1",
-            "normal", False, 17, 275.0, 40, "candidate", "Expansion tank replacement"),
-        Job("J-009", "22 Church St Keene NH", 42.9339, -72.2783, "Area-4",
-            "nh_overnight", False, 45, 520.0, 90, "candidate", "Full boiler overhaul"),
-        Job("J-010", "67 State St Portsmouth NH", 43.0718, -70.7626, "Area-5",
-            "normal", False, 10, 200.0, 30, "candidate", "Annual inspection"),
-        Job("J-011", "145 South St Concord NH", 43.2003, -71.5340, "Area-1",
-            "radiator", False, 8, 350.0, 50, "candidate", "Radiator run - 3 units"),
-        Job("J-012", "78 North Main St Manchester NH", 43.0012, -71.4620, "Area-2",
-            "normal", False, 25, 300.0, 35, "candidate", "Steam pipe insulation"),
-        Job("J-013", "33 Lake Ave Laconia NH", 43.5278, -71.4714, "Area-6",
-            "normal", False, 40, 380.0, 45, "candidate", "Boiler efficiency test"),
-        Job("J-014", "55 Market St Portsmouth NH", 43.0770, -70.7580, "Area-5",
-            "normal", False, 5, 170.0, 20, "candidate", "Thermostat replacement"),
-        Job("J-015", "210 Central St Franklin NH", 43.4453, -71.6474, "Area-6",
-            "normal", False, 18, 260.0, 35, "candidate", "Zone control repair"),
-        Job("J-016", "19 Depot St Concord NH", 43.2075, -71.5390, "Area-1",
-            "helper", True, 11, 450.0, 120, "candidate", "Boiler install assist"),
-        Job("J-017", "400 Amherst St Nashua NH", 42.7710, -71.4910, "Area-3",
-            "normal", False, 6, 185.0, 25, "candidate", "Pipe leak repair"),
-        Job("J-018", "88 Hanover St Manchester NH", 42.9910, -71.4630, "Area-2",
-            "normal", False, 33, 340.0, 45, "candidate", "Steam system balancing"),
-        Job("J-019", "12 Main St Peterborough NH", 42.8706, -71.9517, "Area-4",
-            "nh_overnight", False, 50, 480.0, 90, "candidate", "Full system overhaul"),
-        Job("J-020", "300 Daniel Webster Hwy Merrimack NH", 42.8580, -71.5010, "Area-3",
-            "normal", False, 15, 230.0, 35, "candidate", "Pump replacement"),
-        Job("J-021", "145 South St Concord NH", 43.2003, -71.5340, "Area-1",
-            "normal", False, 20, 200.0, 30, "candidate", "Follow-up valve check"),
-        Job("J-022", "77 Pleasant St Concord NH", 43.2065, -71.5355, "Area-1",
-            "radiator", False, 13, 360.0, 50, "candidate", "Radiator run - 2 units"),
-        Job("J-023", "50 West St Keene NH", 42.9345, -72.2800, "Area-4",
-            "normal", False, 28, 310.0, 40, "candidate", "Annual maintenance"),
-        Job("J-024", "1010 Elm St Manchester NH", 42.9870, -71.4545, "Area-2",
-            "helper", True, 4, 500.0, 120, "candidate", "Boiler replacement"),
-        Job("J-025", "65 Bridge St Manchester NH", 42.9990, -71.4580, "Area-2",
-            "normal", False, 22, 290.0, 35, "candidate", "Condensate return repair"),
+        Job("SM8-10452", "123 Broadway", "Providence", "RI", "01", "Providence Core",
+            "Service Call", "Normal jobs", 41.8240, -71.4128, "2026-03-03", 28,
+            description="Annual boiler service"),
+        Job("SM8-10510", "456 Hope St", "Providence", "RI", "01", "Providence Core",
+            "Boiler Maintenance", "Normal jobs", 41.8365, -71.3985, "2026-03-17", 14,
+            description="Routine boiler maintenance"),
+        Job("SM8-10588", "789 Elmwood Ave", "Providence", "RI", "02", "Providence South",
+            "Steam System Inspection", "Normal jobs", 41.8010, -71.4180, "2026-03-10", 21,
+            description="Steam system inspection"),
+        Job("SM8-10631", "34 Wickenden St", "Providence", "RI", "01", "Providence Core",
+            "Vent / Trap / Repair / Piping Work", "Priority", 41.8195, -71.4005, "2026-01-15", 75,
+            required_job_hours=2.5, avg_wait_2x_flag=True,
+            description="Vent and trap repair - overdue"),
+        Job("SM8-10677", "88 Atwells Ave", "Providence", "RI", "03", "Federal Hill",
+            "Service Call", "Normal jobs", 41.8260, -71.4260, "2026-03-20", 11,
+            description="Thermostat issue"),
+        Job("SM8-10690", "22 Thayer St", "Providence", "RI", "01", "Providence Core",
+            "Estimate", "Requested Scheduling", 41.8285, -71.4010, "2026-03-12", 19,
+            rebook_count_with_notes=1,
+            scheduling_preference="Tuesday or Thursday mornings preferred",
+            description="Estimate for new system"),
+        Job("SM8-10491", "55 Westminster St", "Providence", "RI", "01", "Providence Core",
+            "Go Back", "Normal jobs", 41.8230, -71.4175, "2026-03-24", 7,
+            description="Follow-up from prior visit"),
+        Job("SM8-20311", "100 Broad St", "Cranston", "RI", "04", "Cranston",
+            "Boiler Maintenance", "Normal jobs", 41.7735, -71.4375, "2026-03-05", 26,
+            description="Annual boiler maintenance"),
+        Job("SM8-20314", "210 Reservoir Ave", "Cranston", "RI", "04", "Cranston",
+            "Trap Service", "Normal jobs", 41.7680, -71.4290, "2026-03-14", 17,
+            required_job_hours=1.5, description="Trap service - 3 traps"),
+        Job("SM8-20319", "45 Phenix Ave", "Cranston", "RI", "04", "Cranston",
+            "Service Call", "Accepted Quotes", 41.7620, -71.4400, "2026-02-20", 39,
+            required_job_hours=3.0, total_job_amount=1050.0,
+            description="Accepted quote for piping work"),
+        Job("SM8-20341", "78 Pontiac Ave", "Cranston", "RI", "04", "Cranston",
+            "Insulation", "Normal jobs", 41.7700, -71.4330, "2026-03-18", 13,
+            required_job_hours=2.0, description="Pipe insulation job"),
+        Job("SM8-20356", "300 Park Ave", "Cranston", "RI", "04", "Cranston",
+            "New Boiler Visit", "Normal jobs", 41.7750, -71.4350, "2026-03-22", 9,
+            description="New boiler visit consultation"),
+        Job("SM8-30402", "15 Monticello Rd", "Providence", "RI", "05", "Refinisher",
+            "Radiator Replacement", "Normal jobs", 41.8180, -71.4350, "2026-03-08", 23,
+            radiator_count=3, refinisher_location="Providence",
+            description="Radiator replacement - 3 units"),
+        Job("SM8-30405", "15 Monticello Rd", "Providence", "RI", "05", "Refinisher",
+            "Radiator Pick-Up", "Normal jobs", 41.8180, -71.4350, "2026-03-15", 16,
+            radiator_count=2, refinisher_location="Providence",
+            description="Radiator pickup for refinishing"),
+        Job("SM8-30411", "67 Valley St", "Providence", "RI", "02", "Providence South",
+            "Radiator Refinishing", "Normal jobs", 41.8100, -71.4220, "2026-03-06", 25,
+            radiator_count=4, refinisher_location="Providence",
+            description="Radiator refinishing - 4 units"),
+        Job("SM8-30440", "120 Charles St", "Providence", "RI", "01", "Providence Core",
+            "Radiator Service", "Normal jobs", 41.8280, -71.4100, "2026-03-19", 12,
+            description="Radiator service"),
+        Job("SM8-30451", "400 Admiral St", "Providence", "RI", "03", "Federal Hill",
+            "Radiator Replace & Refinish", "Normal jobs", 41.8340, -71.4350, "2026-03-01", 30,
+            radiator_count=2, refinisher_location="Providence",
+            description="Replace and refinish 2 radiators"),
+        Job("SM8-40118", "88 Main St", "East Greenwich", "RI", "06", "East Greenwich",
+            "Steam System Inspection", "Normal jobs", 41.6600, -71.4600, "2026-03-02", 29,
+            description="Steam system inspection"),
+        Job("SM8-40127", "55 Post Rd", "Warwick", "RI", "07", "Warwick",
+            "Service Call", "Normal jobs", 41.7000, -71.4170, "2026-03-11", 20,
+            description="Service call"),
+        Job("SM8-40135", "12 Hope St", "Bristol", "RI", "08", "Bristol",
+            "Boiler Maintenance", "Normal jobs", 41.6770, -71.2660, "2026-03-04", 27,
+            description="Annual boiler maintenance"),
+        Job("SM8-50101", "200 Thames St", "Newport", "RI", "09", "Newport",
+            "New Equipment Installation Other Than Boiler", "Accepted Quotes",
+            41.4880, -71.3130, "2026-02-10", 49,
+            required_job_hours=4.0, avg_wait_2x_flag=True,
+            total_job_amount=1400.0,
+            description="New heat pump installation"),
+        Job("SM8-50102", "90 Bellevue Ave", "Newport", "RI", "09", "Newport",
+            "Castrads New Radiator(s)", "Normal jobs", 41.4750, -71.3100,
+            "2026-03-07", 24, required_job_hours=3.5, radiator_count=6,
+            description="New Castrads radiator install - 6 units"),
+        Job("SM8-60201", "45 Main St", "Woonsocket", "RI", "10", "Woonsocket",
+            "Service Call", "Normal jobs", 42.0030, -71.5150, "2026-02-25", 34,
+            avg_wait_2x_flag=True,
+            description="Service call - far north"),
+        Job("SM8-60202", "33 Social St", "Woonsocket", "RI", "10", "Woonsocket",
+            "Boiler Maintenance", "Normal jobs", 42.0010, -71.5120, "2026-03-13", 18,
+            rebook_count_without_notes=1,
+            description="Boiler maintenance - rebooked no notes"),
+        Job("SM8-70301", "150 Main St", "Pawtucket", "RI", "11", "Pawtucket",
+            "Vent / Trap / Repair / Piping Work", "Normal jobs", 41.8780, -71.3830,
+            "2026-03-09", 22, required_job_hours=1.5,
+            description="Vent repair"),
     ]
     techs = [
-        Technician("T-01", "Mike Sullivan",
-                   ["boiler_service", "radiator", "steam_trap", "install"],
-                   43.2081, -71.5376, ["Mon", "Tue", "Wed", "Thu", "Fri"]),
-        Technician("T-02", "Dave Patel",
-                   ["boiler_service", "steam_trap", "zone_valve", "pipe_repair"],
-                   42.9956, -71.4548, ["Mon", "Tue", "Wed", "Thu", "Fri"]),
-        Technician("T-03", "Chris O'Brien",
-                   ["boiler_service", "radiator", "install", "overhaul"],
-                   43.0718, -70.7626, ["Mon", "Tue", "Wed", "Thu"]),
-        Technician("T-04", "Sam Torres",
-                   ["boiler_service", "steam_trap", "pump", "pipe_repair"],
-                   42.7654, -71.4676, ["Mon", "Tue", "Wed", "Thu", "Fri"]),
+        Technician("T-01", "Mike",
+                   ["boiler_service", "radiator", "steam_trap", "install", "overhaul"],
+                   41.8180, -71.4350, ["Mon", "Tue", "Wed", "Thu", "Fri"]),
+        Technician("T-02", "Chris",
+                   ["boiler_service", "radiator", "install", "steam_trap"],
+                   41.8240, -71.4128, ["Mon", "Tue", "Wed", "Thu", "Fri"]),
+        Technician("T-03", "Dave",
+                   ["boiler_service", "steam_trap", "radiator", "overhaul"],
+                   41.8240, -71.4128, ["Mon", "Tue", "Wed", "Thu", "Fri"]),
     ]
     vehicles = [
+        Vehicle("V-1", "service_truck",
+                ["boiler_service", "steam_trap", "radiator", "install", "overhaul"],
+                ["Mon", "Tue", "Wed", "Thu", "Fri"],
+                speed_mpm=500, cost_per_metre=0.00035, capacity=14),
         Vehicle("V-2", "radiator_van",
-                ["radiator", "install", "overhaul"],
+                ["radiator"],
                 ["Mon", "Tue", "Wed", "Thu", "Fri"],
                 speed_mpm=400, cost_per_metre=0.00045, capacity=8),
-        Vehicle("V-4", "capacity_switch",
-                ["boiler_service", "steam_trap"],
-                ["Mon", "Wed", "Fri"],
-                speed_mpm=500, cost_per_metre=0.00030, capacity=10),
+        Vehicle("V-3", "service_truck",
+                ["boiler_service", "steam_trap", "radiator", "install"],
+                ["Mon", "Tue", "Wed", "Thu", "Fri"],
+                speed_mpm=500, cost_per_metre=0.00035, capacity=14),
         Vehicle("V-5", "service_truck",
-                ["boiler_service", "steam_trap", "zone_valve", "pipe_repair", "pump"],
+                ["boiler_service", "steam_trap", "radiator", "overhaul"],
                 ["Mon", "Tue", "Wed", "Thu", "Fri"],
                 speed_mpm=500, cost_per_metre=0.00035, capacity=14),
-        Vehicle("V-6", "service_truck",
-                ["boiler_service", "steam_trap", "zone_valve", "pipe_repair", "pump"],
+        Vehicle("V-4", "overflow",
+                ["boiler_service", "steam_trap", "steam_system_inspection"],
                 ["Mon", "Tue", "Wed", "Thu", "Fri"],
-                speed_mpm=500, cost_per_metre=0.00035, capacity=14),
-        Vehicle("V-7", "service_truck",
-                ["boiler_service", "radiator", "install"],
-                ["Mon", "Tue", "Wed", "Thu", "Fri"],
-                speed_mpm=450, cost_per_metre=0.00040, capacity=12),
+                speed_mpm=500, cost_per_metre=0.00030, capacity=10),
     ]
+    context = WeeklyContext(
+        week_of="2026-04-06",
+        season="Winter",
+        include_v4=True,
+        helpers_available=2,
+    )
     exceptions = [
-        WeeklyException("EX-01", "technician", "T-03", "Fri",
-                        "unavailable", "PTO"),
-        WeeklyException("EX-02", "vehicle", "V-4", "Tue",
-                        "unavailable", "maintenance"),
-        WeeklyException("EX-03", "vehicle", "V-4", "Thu",
-                        "unavailable", "maintenance"),
-        WeeklyException("EX-04", "technician", "T-01", "Wed",
-                        "partial", "boiler_install_3hrs"),
-        WeeklyException("EX-05", "technician", "T-02", "Mon",
-                        "unavailable", "training"),
+        WeeklyException("EX-2026-04-06-01", "2026-04-06", "Chris",
+                        "Full technician-day block", "Friday", "PTO"),
+        WeeklyException("EX-2026-04-06-02", "2026-04-06", "Dave",
+                        "Full technician-day block", "Monday", "Training day"),
+    ]
+    area_rules = [
+        AreaRule("V-4 eligibility", "Vehicle restriction",
+                 "V-4 may carry steam system inspections, service calls, and boiler maintenance only."),
+        AreaRule("V-2 radiator only", "Vehicle restriction",
+                 "V-2 is dedicated to radiator work and radiator pick-up/delivery only."),
+        AreaRule("Helper stays with tech", "Helper rule",
+                 "Once a helper is assigned to a technician they stay together for the whole day."),
+        AreaRule("No helper boiler maintenance", "Helper rule",
+                 "Boiler maintenance does not require a helper by job type."),
+        AreaRule("No helper service call", "Helper rule",
+                 "Service calls do not require a helper by job type."),
+        AreaRule("No helper steam inspection", "Helper rule",
+                 "Steam system inspections do not require a helper by job type."),
+        AreaRule("Winter route target", "Capacity rule",
+                 "Winter: 4 booked + 2 standby per route. Possible 5th booked when backlog is high."),
+        AreaRule("Summer route target", "Capacity rule",
+                 "Summer: 3 booked + 2 standby per route."),
+        AreaRule("Providence shop", "Area rule",
+                 "Providence shop is an explicit routing factor. Use as start/end when optimizing routes."),
+        AreaRule("Duplicate exception 15 Monticello", "Duplicate rule",
+                 "Multiple radiator replacement slave jobs at 15 Monticello Providence must never be treated as duplicates."),
     ]
 
-    wd = WeeklyData(jobs=jobs, technicians=techs,
-                    vehicles=vehicles, exceptions=exceptions)
+    wd = WeeklyData(jobs=jobs, technicians=techs, vehicles=vehicles,
+                    exceptions=exceptions, context=context,
+                    area_rules=area_rules)
     write_weekly_data(wd)
     return wd
 

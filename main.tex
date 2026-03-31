@@ -319,6 +319,7 @@ Refinisher Location      & Text    & Optional  & Radiator jobs only \\
 Rebook Count (with notes)  & Number & Optional & Supports rebook-age rule \\
 Rebook Count (no notes)    & Number & Optional & Supports rebook-age rule \\
 Scheduling Pref Detail   & Long text & Optional & Source pending Amy \\
+Total Job Amount         & Number & Optional & Used for Accepted Quotes fallback (amount $\div$ 350, rounded up to next half hour) \\
 \bottomrule
 \end{longtable}
 }
@@ -356,12 +357,22 @@ Notes                    & Long text & Optional & Plain-language context \\
 \subsection*{Lookup / Rules Data (Input Payload~4)}
 
 Reference tables and Airtable-managed rule inputs (not a live job list):
-\begin{itemize}
-    \item Technician / vehicle / area lookup data.
-    \item Area naming, adjacency, and grouping rules.
-    \item Airtable-managed restriction flags and aging/fairness flags.
-    \item Route-eligibility tables Amy manages in Airtable.
-\end{itemize}
+
+\medskip
+{\small
+\begin{longtable}{lclp{4.5cm}}
+\toprule
+\textbf{Field} & \textbf{Type} & \textbf{Req?} & \textbf{Notes} \\
+\midrule
+Lookup Item      & Text      & Required & Human-readable name of the reference rule \\
+Lookup Type      & Text      & Required & E.g.\ ``Vehicle restriction'', ``Area rule'', ``Grouping rule'' \\
+Rule / Value     & Long text & Required & Reference value consumed by Python or surfaced to Amy \\
+Active?          & Boolean   & Required & Allows Airtable-managed activation / deactivation \\
+\bottomrule
+\end{longtable}
+}
+
+These tables cover technician / vehicle / area lookup data; area naming, adjacency, and grouping rules; Airtable-managed restriction flags and aging/fairness flags; and route-eligibility tables Amy manages in Airtable.
 
 \subsection*{Validation and Fallback Behaviour}
 \begin{itemize}
@@ -381,6 +392,33 @@ If a suspected duplicate still slips through and materially affects route constr
 Multiple radiator replacement slave jobs at 15 Monticello, Providence must \textbf{never} be treated as duplicates.
 That address is the storage facility and multiple same-day pickup jobs there are expected.
 The engine continues to flag probable duplicates for Ryan review when duplicate jobs are detected by matching property address, except for the radiator slave job exception above.
+
+\subsection*{Implementation File Mapping}
+The four abstract payloads plus two supporting resources map to six CSV files
+in the \texttt{data/} folder:
+
+\medskip
+{\small
+\begin{tabular}{lll}
+\toprule
+\textbf{Payload / Resource} & \textbf{File} & \textbf{Rows} \\
+\midrule
+Candidate Jobs (1)  & \texttt{example\_jobs.csv}                & One per job \\
+Weekly Context (2)   & \texttt{example\_weekly\_context.csv}     & Single row per week \\
+Weekly Exceptions (3) & \texttt{example\_weekly\_exceptions.csv} & One per exception \\
+Lookup / Rules (4)   & \texttt{example\_area\_rules.csv}         & One per rule \\
+Technicians          & \texttt{example\_technicians.csv}         & One per technician \\
+Vehicles             & \texttt{example\_vehicles.csv}            & One per vehicle \\
+\bottomrule
+\end{tabular}
+}
+
+\medskip
+The standalone script \texttt{weekly\_data.py} can generate these files
+(\texttt{-{}-generate}), load and validate them (\texttt{-{}-load}), or pull
+live jobs from ServiceM8 (\texttt{-{}-servicem8}).  The core library
+\texttt{nes\_dispatch/data/loaders.py} reads the same files into domain
+dataclasses.
 
 % ===================================================================
 \section*{Planning Pipeline}
@@ -749,16 +787,56 @@ Ryan-to-AI actions remain button-based only: Run AI Analysis, Approve, Reject\,/
 Used \emph{before} ServiceM8 transcription for week-build issues.
 Each record contains:
 
-\begin{itemize}
-    \item Communication ID, Type (e.g.\ Skipped Job, Weak Route, Duplicate Review), Severity (Info / Warning / Action Needed).
-    \item Schedule Week link, human-readable Message, Resolved flag.
-    \item Optional: Job Number, Route Day, Route Slot, What Needs Fixing, AI Suggested Action.
-\end{itemize}
+\medskip
+{\small
+\begin{longtable}{lclp{4cm}}
+\toprule
+\textbf{Field} & \textbf{Type} & \textbf{Req?} & \textbf{Notes} \\
+\midrule
+Communication ID   & Text      & Required & Unique row identifier \\
+Communication Type & Select    & Required & E.g.\ Skipped Job, Weak Route, Duplicate Review \\
+Severity           & Select    & Required & Info / Warning / Action Needed \\
+Schedule Week      & Linked    & Required & Parent review record \\
+Message            & Long text & Required & Human-readable message \\
+Resolved           & Checkbox  & Required & Whether the issue has been cleared \\
+Ryan Note          & Long text & Optional & Owner-side note \\
+Created By Run     & Text      & Optional & Run identifier for traceability \\
+Job Number         & Text      & Optional & Tied to one job \\
+Route Day          & Text      & Optional & Tied to a candidate route-day \\
+Route Slot         & Text      & Optional & Tied to a candidate route slot \\
+What Needs Fixing  & Long text & Optional & Plain-language fix request \\
+AI Suggested Action & Long text & Optional & Action guidance \\
+\bottomrule
+\end{longtable}
+}
 
 \subsection*{Route Communications}
 
 Used in the post-sync route/day/technician interface for route-specific issues.
-Each record additionally requires Route Day and Route Slot context, and may include Affected Window and Outside Normal Parameters flags.
+Route Day and Route Slot are \textbf{required} in the post-sync context.
+
+\medskip
+{\small
+\begin{longtable}{lclp{4cm}}
+\toprule
+\textbf{Field} & \textbf{Type} & \textbf{Req?} & \textbf{Notes} \\
+\midrule
+Communication ID   & Text      & Required & Unique row identifier \\
+Communication Type & Select    & Required & E.g.\ Replacement Result, Window Note \\
+Severity           & Select    & Required & Info / Warning / Action Needed \\
+Schedule Week      & Linked    & Required & Parent review record \\
+Message            & Long text & Required & Human-readable message \\
+Route Day          & Text      & Required & Route context (post-sync) \\
+Route Slot         & Text      & Required & Technician or Van~4 row \\
+Resolved           & Checkbox  & Required & Whether the issue has been cleared \\
+Ryan Note          & Long text & Optional & Owner-side note \\
+Created By Run     & Text      & Optional & Run identifier for traceability \\
+Job Number         & Text      & Optional & Tied to one job \\
+Affected Window    & Text      & Optional & E.g.\ ``7--8 first slot'' \\
+Outside Normal Parameters & Checkbox & Optional & Flags weak-but-workable outcomes \\
+\bottomrule
+\end{longtable}
+}
 
 Both communication tables are implemented as one row per issue, not aggregated summary blobs.
 
