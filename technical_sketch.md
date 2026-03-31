@@ -280,11 +280,9 @@ Airtable overrides take precedence when present (see ownership boundaries in spe
   "R_cluster_radius_m": 30000,     // cluster radius from depot (metres)
   "r_interstop_limit_m": 15000,    // max gap between consecutive stops
 
-  // --- Scoring (decision-ladder weights, configurable) ---
-  "seasonal_weights": {
-    "summer": { "w_geo": 0.5, "w_age": 0.1, "w_queue": 0.3, "w_readiness": 0.1 },
-    "winter": { "w_geo": 0.2, "w_age": 0.4, "w_queue": 0.3, "w_readiness": 0.1 }
-  },
+  // --- Scoring (decision-ladder tier order, per season) ---
+  "winter_tier_order": ["Priority", "2x-average Normal", "Accepted Quotes = Scheduling Preferences", "Normal"],
+  "summer_tier_order": ["Priority", "Accepted Quotes = Scheduling Preferences", "Normal"],
   "summer_months": [3, 4, 5, 6, 7, 8, 9],
 
   // --- Helpers ---

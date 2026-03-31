@@ -58,12 +58,7 @@ def check_workload(
         mins = jobs_service_mins.get(a.job_id, 0.0)
         tech_mins[a.tech_id] = tech_mins.get(a.tech_id, 0.0) + mins
         tech_days.setdefault(a.tech_id, set()).add(a.day)
-        # Also count helper contributions
-        if a.helper_tech_id:
-            tech_mins[a.helper_tech_id] = (
-                tech_mins.get(a.helper_tech_id, 0.0) + mins
-            )
-            tech_days.setdefault(a.helper_tech_id, set()).add(a.day)
+        # helper_required is a boolean flag; no named helper to track
 
     tech_lookup = {t.tech_id: t for t in technicians}
     for tech_id, total_mins in tech_mins.items():

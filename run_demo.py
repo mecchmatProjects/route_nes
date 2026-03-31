@@ -172,9 +172,9 @@ def main() -> None:
 
     sub("OUTPUT: special assignments")
     if sp_assign:
-        print(f"  {'Job':8s}  {'Tech':6s}  {'Vehicle':8s}  Day    Helper")
+        print(f"  {'Job':8s}  {'Tech':6s}  {'Vehicle':8s}  Day    Helper?")
         for a in sp_assign:
-            hlp = a.helper_tech_id or "-"
+            hlp = "Yes" if a.helper_required else "-"
             print(f"  {a.job_id:8s}  {a.tech_id:6s}  {a.vehicle_id:8s}  "
                   f"{a.day:5s}  {hlp}")
     else:
@@ -200,9 +200,9 @@ def main() -> None:
 
     sub("OUTPUT: Phase 1 assignments")
     print(f"  Assigned: {len(ph1_assign)} jobs")
-    print(f"  {'Job':8s}  {'Tech':6s}  {'Vehicle':8s}  Day    Helper  Description")
+    print(f"  {'Job':8s}  {'Tech':6s}  {'Vehicle':8s}  Day    Helper?  Description")
     for a in sorted(ph1_assign, key=lambda x: (x.day, x.tech_id)):
-        hlp = a.helper_tech_id or "-"
+        hlp = "Yes" if a.helper_required else "-"
         desc = jobs_lookup[a.job_id].description[:40]
         print(f"  {a.job_id:8s}  {a.tech_id:6s}  {a.vehicle_id:8s}  "
               f"{a.day:5s}  {hlp:6s}  {desc}")

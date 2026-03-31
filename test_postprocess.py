@@ -193,41 +193,40 @@ assert all(f.severity == "CRITICAL" for f in flags_oob)
 passed += 1
 print(f"  [PASS] Test 9: GEOCODE_OOB for 2 out-of-bounds jobs")
 
-# ═══ Test 10: HELPER_TRAVEL flag ════════════════════════════════════════════
-# Helper tech far from primary → flag
-tech_far = Technician("T-FAR", "Far", ["boiler_service"], 45.0, -73.0, ["Mon"])
+# ═══ Test 10: HELPER_REQUIRED flag ══════════════════════════════════════════
+# Job assigned with helper_required=True → informational flag
 assignments_ht = [
-    ScheduleAssignment("J1", "T-A", "V-A", "Mon", helper_tech_id="T-FAR"),
+    ScheduleAssignment("J1", "T-A", "V-A", "Mon", helper_required=True),
 ]
-flags_ht = flag_helper_travel(assignments_ht, [_tech_a, tech_far], config)
+flags_ht = flag_helper_travel(assignments_ht, [_tech_a], config)
 assert len(flags_ht) == 1
-assert flags_ht[0].code == "HELPER_TRAVEL"
-assert flags_ht[0].severity == "WARN"
-assert flags_ht[0].refs["helper_tech_id"] == "T-FAR"
+assert flags_ht[0].code == "HELPER_REQUIRED"
+assert flags_ht[0].severity == "INFO"
+assert flags_ht[0].refs["job_id"] == "J1"
 passed += 1
-print(f"  [PASS] Test 10: HELPER_TRAVEL flag for distant helper")
+print(f"  [PASS] Test 10: HELPER_REQUIRED flag for helper-needed job")
 
-# ═══ Test 11: HELPER_TRAVEL — close helper → no flag ════════════════════════
+# ═══ Test 11: no helper flag when not required ══════════════════════════════
 assignments_close = [
-    ScheduleAssignment("J1", "T-A", "V-A", "Mon", helper_tech_id="T-B"),
+    ScheduleAssignment("J1", "T-A", "V-A", "Mon", helper_required=False),
 ]
 flags_ht2 = flag_helper_travel(assignments_close, [_tech_a, _tech_b], config)
-assert len(flags_ht2) == 0, f"Close helper should not flag, got {len(flags_ht2)}"
+assert len(flags_ht2) == 0, f"Non-helper job should not flag, got {len(flags_ht2)}"
 passed += 1
-print(f"  [PASS] Test 11: no HELPER_TRAVEL for close helper")
+print(f"  [PASS] Test 11: no HELPER_REQUIRED for non-helper job")
 
 # ═══ Test 12: generate_review_flags aggregation ═════════════════════════════
 all_flags = generate_review_flags(
     candidate_jobs=dup_jobs + oob_jobs,
     assignments=assignments_ht,
-    technicians=[_tech_a, tech_far],
+    technicians=[_tech_a, _tech_b],
     standby=standby_low,
     config=config,
 )
 flag_codes = [f.code for f in all_flags]
 assert "DUP_ADDR" in flag_codes
 assert "GEOCODE_OOB" in flag_codes
-assert "HELPER_TRAVEL" in flag_codes
+assert "HELPER_REQUIRED" in flag_codes
 assert "WEAK_STANDBY" in flag_codes
 passed += 1
 print(f"  [PASS] Test 12: generate_review_flags has all 4 codes: {sorted(set(flag_codes))}")

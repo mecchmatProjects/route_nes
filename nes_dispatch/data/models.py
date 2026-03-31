@@ -52,6 +52,7 @@ ELIGIBLE_QUEUES: set[str] = {
     "Priority",
     "Accepted Quotes",
     "Requested Scheduling",
+    "Scheduling Preferences",
     "Normal jobs",
 }
 EXCLUDED_QUEUES: set[str] = {"Urgent", "On Hold"}
@@ -241,7 +242,7 @@ class ScheduleAssignment:
     tech_id: str
     vehicle_id: str
     day: str
-    helper_tech_id: str | None = None  # set for J^H jobs
+    helper_required: bool = False      # spec §5: yes/no flag only, no named helper
 
 
 @dataclass
@@ -253,6 +254,7 @@ class RouteResult:
     dropped_job_ids: list[str]         # Phase-1-assigned but infeasible in Phase 2
     total_distance_m: float
     total_time_min: float
+    helper_required: bool = False      # True if any job on route needs a helper
     method: str = "nearest_neighbour"
 
 

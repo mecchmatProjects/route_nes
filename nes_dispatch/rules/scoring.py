@@ -1,9 +1,16 @@
-"""Composite priority-score formula (Technical Sketch §5, Stage 5.1).
+"""Queue-based decision-ladder scoring (spec §6.1).
 
-score_j = w_g·geo_j + w_f·fair_j + w_a·age_j + w_r·readiness_j
+Replaces the earlier composite weighted formula.  The spec explicitly says:
+"Use a short decision-ladder scoring model rather than a large point system."
 
-All four components are normalised to [0, 1].
-Seasonal weights come from config["seasonal_weights"].
+Winter ranking:  Priority → 2x-average Normal → Accepted Quotes = Requested
+                 Scheduling (better route wins) → Normal
+Summer ranking:  Priority → Accepted Quotes = Requested Scheduling (route
+                 quality decides) → Normal
+
+Within each tier, geography (proximity) is used as the tiebreaker.
+Scheduling Preferences jobs are treated as an early-pass constraint/review
+pool per spec §4; they rank with their effective queue tier.
 """
 
 from __future__ import annotations
@@ -30,17 +37,25 @@ def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 
 @dataclass
 class ScoredJob:
-    """Job wrapper carrying the computed composite score."""
+    """Job wrapper carrying the decision-ladder score."""
     job: Job
-    score: float
-    geo: float
-    fair: float
-    age: float
-    readiness: float
+    score: float          # composite for sort: tier_score + geo tiebreaker
+    geo: float            # proximity sub-score ∈ [0,1] (tiebreaker)
+    fair: float           # kept for back-compat; = 0.0 in ladder mode
+    age: float            # age sub-score ∈ [0,1] (used in winter tiebreak)
+    readiness: float      # kept for back-compat; = 0.0 in ladder mode
 
 
 def _get_season(config: dict[str, Any]) -> str:
-    """Return 'summer' or 'winter' based on the current month and config."""
+    """Return 'summer' or 'winter'.
+
+    Prefers the explicit ``season`` key injected from WeeklyContext.
+    Falls back to current-month heuristic only when no explicit season
+    is provided (spec §5 / addendum Table 4: Season is a required input).
+    """
+    explicit = config.get("season")
+    if explicit:
+        return explicit.lower()
     month = date.today().month
     summer_months = config.get("summer_months", [3, 4, 5, 6, 7, 8, 9])
     return "summer" if month in summer_months else "winter"
@@ -67,45 +82,42 @@ def _geo_score(
     return max(0.0, 1.0 - min_dist / R)
 
 
-def _fair_score(job: Job, max_value: float) -> float:
-    """Fairness / value-normalised score ∈ [0, 1].
-
-    Higher-value jobs receive a higher fairness contribution so that
-    revenue-significant work is not indefinitely deferred.
-    """
-    if max_value <= 0:
-        return 0.0
-    return min(job.value / max_value, 1.0)
-
-
-_AGE_CEILING_DAYS = 60  # age_days at which the score saturates at 1.0
+_AGE_CEILING_DAYS = 60  # age_days at which the age sub-score saturates at 1.0
 
 
 def _age_score(job: Job) -> float:
-    """Age-based urgency score ∈ [0, 1].
-
-    Linearly ramps from 0 at age 0 to 1 at _AGE_CEILING_DAYS.
-    """
+    """Age-based sub-score ∈ [0, 1].  Used as winter tiebreaker."""
     return min(job.age_days / _AGE_CEILING_DAYS, 1.0)
 
 
-def _readiness_score(
-    job: Job,
-    area_job_counts: dict[str, int],
-    area_assigned_counts: dict[str, int],
-) -> float:
-    """Area-readiness score ∈ [0, 1].
+# ── Decision-ladder tier scores ─────────────────────────────────────────────
+# Higher tier → higher base score.  Tiebreaker (geo ∈ [0,1]) is added within.
 
-    Prioritises jobs in areas that have the *fewest* already-assigned jobs
-    relative to total candidates.  An area with 0% coverage returns 1.0;
-    an area fully covered returns 0.0.
-    """
-    total = area_job_counts.get(job.area_id, 0)
-    if total <= 0:
-        return 0.5  # unknown area → neutral
-    assigned = area_assigned_counts.get(job.area_id, 0)
-    coverage = assigned / total
-    return max(0.0, 1.0 - coverage)
+_TIER_PRIORITY          = 5000.0  # Priority queue — always first
+_TIER_2X_AVERAGE        = 4000.0  # 2x-average Normal (winter only)
+_TIER_AQ_RS             = 3000.0  # Accepted Quotes = Requested Scheduling
+_TIER_SCHED_PREF        = 2500.0  # Scheduling Preferences (early-pass pool)
+_TIER_NORMAL            = 1000.0  # Normal jobs
+
+
+def _ladder_tier(job: Job, season: str) -> float:
+    """Return the base tier score for *job* based on queue and season."""
+    q = job.queue
+
+    if q == "Priority":
+        return _TIER_PRIORITY
+
+    if season == "winter" and q == "Normal jobs" and job.avg_wait_2x_flag:
+        return _TIER_2X_AVERAGE
+
+    if q in ("Accepted Quotes", "Requested Scheduling"):
+        return _TIER_AQ_RS
+
+    if q == "Scheduling Preferences":
+        return _TIER_SCHED_PREF
+
+    # Normal jobs (default)
+    return _TIER_NORMAL
 
 
 # ── Public API ──────────────────────────────────────────────────────────────
@@ -117,7 +129,11 @@ def score_jobs(
     config: dict[str, Any],
     area_assigned_counts: dict[str, int] | None = None,
 ) -> list[ScoredJob]:
-    """Compute composite priority scores for all *jobs*.
+    """Score all *jobs* using the queue-based decision ladder.
+
+    Within each tier:
+      - Winter: older jobs preferred (age tiebreaker), then geography.
+      - Summer: geography/route quality preferred, then age.
 
     Returns a list of ScoredJob, **not** yet sorted (caller sorts).
     """
@@ -125,30 +141,27 @@ def score_jobs(
         area_assigned_counts = {}
 
     season = _get_season(config)
-    weights = config.get("seasonal_weights", {}).get(season, {})
-    w_g = weights.get("w_g", 0.3)
-    w_f = weights.get("w_f", 0.3)
-    w_a = weights.get("w_a", 0.3)
-    w_r = weights.get("w_r", 0.1)
-
     R = config.get("R_cluster_radius_m", 30_000)
-
-    # Pre-compute area job counts for readiness
-    area_job_counts: dict[str, int] = {}
-    for j in jobs:
-        area_job_counts[j.area_id] = area_job_counts.get(j.area_id, 0) + 1
-
-    max_value = max((j.value for j in jobs), default=0.0)
 
     scored: list[ScoredJob] = []
     for j in jobs:
-        g = _geo_score(j, technicians, R)
-        f = _fair_score(j, max_value)
-        a = _age_score(j)
-        r = _readiness_score(j, area_job_counts, area_assigned_counts)
+        tier = _ladder_tier(j, season)
+        geo = _geo_score(j, technicians, R)
+        age = _age_score(j)
 
-        composite = w_g * g + w_f * f + w_a * a + w_r * r
-        scored.append(ScoredJob(job=j, score=composite, geo=g, fair=f,
-                                age=a, readiness=r))
+        # Tiebreaker within a tier:
+        #   Winter: age matters more → 0.6·age + 0.4·geo
+        #   Summer: geography matters more → 0.7·geo + 0.3·age
+        if season == "winter":
+            tiebreak = 0.6 * age + 0.4 * geo
+        else:
+            tiebreak = 0.7 * geo + 0.3 * age
+
+        composite = tier + tiebreak  # tier dominates; tiebreak only within tier
+
+        scored.append(ScoredJob(
+            job=j, score=composite, geo=geo,
+            fair=0.0, age=age, readiness=0.0,
+        ))
 
     return scored

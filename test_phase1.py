@@ -30,7 +30,6 @@ from nes_dispatch.rules.eligibility import (
     time_ok, one_veh_per_tech, one_tech_per_veh,
 )
 from nes_dispatch.rules.slot_selection import find_best_eligible_slot, first_failing_rule
-from nes_dispatch.rules.helpers import find_helper
 from nes_dispatch.rules.workload import check_workload
 
 # ── Setup: run stages 2–4 first ─────────────────────────────────────────────
@@ -69,11 +68,10 @@ passed = 0
 scored = score_jobs(normal, wd.technicians, config)
 assert len(scored) == len(normal), f"Expected {len(normal)} scored, got {len(scored)}"
 for sj in scored:
-    assert 0.0 <= sj.score <= 1.0, f"Score {sj.score} out of [0,1] for {sj.job.job_id}"
+    # Decision-ladder scores: tier (1000–5000) + tiebreaker (0–1)
+    assert 1000.0 <= sj.score <= 5001.0, f"Score {sj.score} out of range for {sj.job.job_id}"
     assert 0.0 <= sj.geo <= 1.0
-    assert 0.0 <= sj.fair <= 1.0
     assert 0.0 <= sj.age <= 1.0
-    assert 0.0 <= sj.readiness <= 1.0
 passed += 1
 print(f"  [PASS] Test 1: score_jobs produces valid scores for {len(scored)} jobs")
 
@@ -168,7 +166,7 @@ assert reason == "SKILL_MISMATCH", f"Expected SKILL_MISMATCH, got {reason}"
 passed += 1
 print(f"  [PASS] Test 9: first_failing_rule → {reason}")
 
-# ═══ Test 10: helper assignment ══════════════════════════════════════════════
+# ═══ Test 10: helper_needed property ═════════════════════════════════════════
 _j_helper = Job(
     job_id="J-HLP", address="456 Help St", city="TestCity", state="RI",
     area_id="01", area_name="A-SYN",
@@ -176,22 +174,25 @@ _j_helper = Job(
     queue="Normal jobs", latitude=43.21, longitude=-71.51,
     created_date="2026-03-20", age_days=5, required_job_hours=2.0,
 )
-_t2 = Technician("T-HLP", "Helper", ["boiler_service", "install"], 43.22, -71.52, ["Mon"])
-helper_id = find_helper(
-    _j_helper, "Mon", "T-SYN", [_t, _t2], config, {},
+assert _j_helper.helper_needed is True, (
+    "New Equipment Installation Other Than Boiler should need a helper"
 )
-assert helper_id == "T-HLP", f"Expected T-HLP, got {helper_id}"
 passed += 1
-print(f"  [PASS] Test 10: helper assignment returns {helper_id}")
+print("  [PASS] Test 10: helper_needed=True for two-man category")
 
-# ═══ Test 11: helper returns None when no eligible helper ════════════════════
-helper_none = find_helper(
-    _j_helper, "Mon", "T-SYN", [_t], config, {},
+# ═══ Test 11: helper_needed False for solo category ═════════════════════════
+_j_solo = Job(
+    job_id="J-SOL", address="789 Solo St", city="TestCity", state="RI",
+    area_id="01", area_name="A-SYN",
+    job_category="Service Call",
+    queue="Normal jobs", latitude=43.21, longitude=-71.51,
+    created_date="2026-03-20", age_days=5, required_job_hours=1.0,
 )
-# _t is the primary, no other tech → None
-assert helper_none is None, f"Expected None, got {helper_none}"
+assert _j_solo.helper_needed is False, (
+    "Service Call should not need a helper"
+)
 passed += 1
-print("  [PASS] Test 11: helper returns None when unavailable")
+print("  [PASS] Test 11: helper_needed=False for solo category")
 
 # ═══ Test 12: workload review — no flags for light schedule ══════════════════
 light_assignments = [

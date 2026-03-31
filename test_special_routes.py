@@ -81,17 +81,14 @@ for a in assignments:
         )
 print("TEST 3 PASS — radiator jobs use radiator-capable vehicle")
 
-# ═══ Test 4: helper jobs have a helper_tech_id set ═══════════════════════════
+# ═══ Test 4: helper jobs have helper_required flag set ════════════════════════
 helper_assignments = [a for a in assignments
                       if next(j for j in special if j.job_id == a.job_id).helper_needed]
 for a in helper_assignments:
-    assert a.helper_tech_id is not None, (
-        f"Helper job {a.job_id} missing helper_tech_id"
+    assert a.helper_required is True, (
+        f"Helper job {a.job_id} missing helper_required flag"
     )
-    assert a.helper_tech_id != a.tech_id, (
-        f"Helper job {a.job_id}: helper is same as primary"
-    )
-print(f"TEST 4 PASS — {len(helper_assignments)} helper jobs have distinct helper tech")
+print(f"TEST 4 PASS — {len(helper_assignments)} helper jobs flagged helper_required")
 
 # ═══ Test 5: assignments respect availability ════════════════════════════════
 tech_lookup = {t.tech_id: t for t in wd.technicians}

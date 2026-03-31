@@ -10,7 +10,7 @@ wd = load_weekly_data("data")
 
 # Test 1: all example jobs have eligible queues → none excluded
 candidates, exclusions = apply_exclusion_filters(wd.jobs)
-assert len(candidates) == 25
+assert len(candidates) == 26
 assert len(exclusions) == 0
 print("TEST 1 PASS — all candidates pass (no Urgent/On Hold queues)")
 
@@ -19,7 +19,7 @@ wd2 = copy.deepcopy(wd)
 wd2.jobs[0].queue = "Urgent"
 wd2.jobs[1].queue = "On Hold"
 cands, excls = apply_exclusion_filters(wd2.jobs)
-assert len(cands) == 23
+assert len(cands) == 24
 assert len(excls) == 2
 codes = {e.reason_code for e in excls}
 assert "QUEUE_URGENT" in codes
@@ -68,7 +68,7 @@ print("TEST 7 PASS — all vehicles unaffected (no vehicle exceptions in data)")
 wd4 = copy.deepcopy(wd)
 wd4.jobs[0].queue = "Urgent"
 cands4, excls4 = apply_exclusion_filters(wd4.jobs)
-assert len(cands4) == 24
+assert len(cands4) == 25
 apply_exceptions(wd4.technicians, wd4.vehicles, wd4.exceptions)
 t02_4 = next(t for t in wd4.technicians if t.tech_id == "T-02")
 assert "Fri" not in t02_4.available_days

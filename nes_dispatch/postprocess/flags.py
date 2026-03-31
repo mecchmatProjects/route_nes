@@ -74,35 +74,22 @@ def flag_helper_travel(
     technicians: list[Technician],
     config: dict[str, Any],
 ) -> list[ReviewFlag]:
-    """Flag helper assignments where helper depot > R from primary depot."""
-    R = config.get("R_cluster_radius_m", 30_000)
-    tech_map = {t.tech_id: t for t in technicians}
+    """Flag route/day pairs that require a helper (spec §5: flag only)."""
     flags: list[ReviewFlag] = []
 
     for a in assignments:
-        if a.helper_tech_id is None:
+        if not a.helper_required:
             continue
-        primary = tech_map.get(a.tech_id)
-        helper = tech_map.get(a.helper_tech_id)
-        if primary is None or helper is None:
-            continue
-        dist = haversine_m(
-            primary.home_lat, primary.home_lon,
-            helper.home_lat, helper.home_lon,
-        )
-        if dist > R:
-            flags.append(ReviewFlag(
-                code="HELPER_TRAVEL",
-                severity="WARN",
-                message=(
-                    f"Helper {a.helper_tech_id} depot is "
-                    f"{dist/1000:.1f} km from primary {a.tech_id} depot "
-                    f"(limit {R/1000:.0f} km) for job {a.job_id}"
-                ),
-                refs={"job_id": a.job_id, "tech_id": a.tech_id,
-                      "helper_tech_id": a.helper_tech_id,
-                      "distance_m": round(dist, 1)},
-            ))
+        flags.append(ReviewFlag(
+            code="HELPER_REQUIRED",
+            severity="INFO",
+            message=(
+                f"Job {a.job_id} on {a.day} ({a.tech_id}/{a.vehicle_id}) "
+                f"requires a helper."
+            ),
+            refs={"job_id": a.job_id, "tech_id": a.tech_id,
+                  "day": a.day},
+        ))
     return flags
 
 
