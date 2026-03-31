@@ -1,6 +1,3 @@
-exception_id,scope_type,scope_id,day,effect_type,effect_value
-EX-01,technician,T-03,Fri,unavailable,PTO
-EX-02,vehicle,V-4,Tue,unavailable,maintenance
-EX-03,vehicle,V-4,Thu,unavailable,maintenance
-EX-04,technician,T-01,Wed,partial,boiler_install_3hrs
-EX-05,technician,T-02,Mon,unavailable,training
+exception_id,week_of,tech_or_slot,exception_type,affected_day,notes
+EX-2026-04-06-01,2026-04-06,Chris,Full technician-day block,Friday,PTO
+EX-2026-04-06-02,2026-04-06,Dave,Full technician-day block,Monday,Training day

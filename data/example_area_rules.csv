@@ -1,0 +1,11 @@
+lookup_item,lookup_type,rule_value,active
+V-4 eligibility,Vehicle restriction,"V-4 may carry steam system inspections, service calls, and boiler maintenance only.",TRUE
+V-2 radiator only,Vehicle restriction,V-2 is dedicated to radiator work and radiator pick-up/delivery only.,TRUE
+Helper stays with tech,Helper rule,Once a helper is assigned to a technician they stay together for the whole day.,TRUE
+No helper boiler maintenance,Helper rule,Boiler maintenance does not require a helper by job type.,TRUE
+No helper service call,Helper rule,Service calls do not require a helper by job type.,TRUE
+No helper steam inspection,Helper rule,Steam system inspections do not require a helper by job type.,TRUE
+Winter route target,Capacity rule,Winter: 4 booked + 2 standby per route. Possible 5th booked when backlog is high.,TRUE
+Summer route target,Capacity rule,Summer: 3 booked + 2 standby per route.,TRUE
+Providence shop,Area rule,Providence shop is an explicit routing factor. Use as start/end when optimizing routes.,TRUE
+Duplicate exception 15 Monticello,Duplicate rule,Multiple radiator replacement slave jobs at 15 Monticello Providence must never be treated as duplicates.,TRUE

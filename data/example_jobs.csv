@@ -1,26 +1,26 @@
-job_id,address,latitude,longitude,area_id,route_type,helper_needed,age_days,value,service_time_min,status,description
-J-001,123 Main St Concord NH,43.2081,-71.5376,Area-1,normal,0,14,250.00,30,candidate,Annual boiler service
-J-002,456 Elm St Manchester NH,42.9956,-71.4548,Area-2,normal,0,7,180.00,25,candidate,Steam trap inspection
-J-003,789 Broadway Nashua NH,42.7654,-71.4676,Area-3,normal,0,21,320.00,45,candidate,Radiator valve replacement
-J-004,12 Oak Ave Concord NH,43.2120,-71.5420,Area-1,normal,0,3,150.00,20,candidate,Thermostat calibration
-J-005,88 Pine Rd Derry NH,42.8806,-71.3273,Area-2,normal,0,30,410.00,60,candidate,Full system flush
-J-006,34 Maple Dr Bedford NH,42.9465,-71.5158,Area-2,normal,0,12,220.00,25,candidate,Pressure relief valve test
-J-007,56 Cedar Ln Merrimack NH,42.8615,-71.4935,Area-3,normal,0,9,190.00,30,candidate,Zone valve repair
-J-008,901 River Rd Bow NH,43.1328,-71.5384,Area-1,normal,0,17,275.00,40,candidate,Expansion tank replacement
-J-009,22 Church St Keene NH,42.9339,-72.2783,Area-4,nh_overnight,0,45,520.00,90,candidate,Full boiler overhaul
-J-010,67 State St Portsmouth NH,43.0718,-70.7626,Area-5,normal,0,10,200.00,30,candidate,Annual inspection
-J-011,145 South St Concord NH,43.2003,-71.5340,Area-1,radiator,0,8,350.00,50,candidate,Radiator run - 3 units
-J-012,78 North Main St Manchester NH,43.0012,-71.4620,Area-2,normal,0,25,300.00,35,candidate,Steam pipe insulation
-J-013,33 Lake Ave Laconia NH,43.5278,-71.4714,Area-6,normal,0,40,380.00,45,candidate,Boiler efficiency test
-J-014,55 Market St Portsmouth NH,43.0770,-70.7580,Area-5,normal,0,5,170.00,20,candidate,Thermostat replacement
-J-015,210 Central St Franklin NH,43.4453,-71.6474,Area-6,normal,0,18,260.00,35,candidate,Zone control repair
-J-016,19 Depot St Concord NH,43.2075,-71.5390,Area-1,helper,1,11,450.00,120,candidate,Boiler install assist
-J-017,400 Amherst St Nashua NH,42.7710,-71.4910,Area-3,normal,0,6,185.00,25,candidate,Pipe leak repair
-J-018,88 Hanover St Manchester NH,42.9910,-71.4630,Area-2,normal,0,33,340.00,45,candidate,Steam system balancing
-J-019,12 Main St Peterborough NH,42.8706,-71.9517,Area-4,nh_overnight,0,50,480.00,90,candidate,Full system overhaul
-J-020,300 Daniel Webster Hwy Merrimack NH,42.8580,-71.5010,Area-3,normal,0,15,230.00,35,candidate,Pump replacement
-J-021,145 South St Concord NH,43.2003,-71.5340,Area-1,normal,0,20,200.00,30,candidate,Follow-up valve check
-J-022,77 Pleasant St Concord NH,43.2065,-71.5355,Area-1,radiator,0,13,360.00,50,candidate,Radiator run - 2 units
-J-023,50 West St Keene NH,42.9345,-72.2800,Area-4,normal,0,28,310.00,40,candidate,Annual maintenance
-J-024,1010 Elm St Manchester NH,42.9870,-71.4545,Area-2,helper,1,4,500.00,120,candidate,Boiler replacement
-J-025,65 Bridge St Manchester NH,42.9990,-71.4580,Area-2,normal,0,22,290.00,35,candidate,Condensate return repair
+job_id,address,city,state,area_id,area_name,job_category,queue,latitude,longitude,created_date,age_days,required_job_hours,radiator_count,refinisher_location,avg_wait_2x_flag,rebook_count_with_notes,rebook_count_without_notes,scheduling_preference,total_job_amount,description
+SM8-10452,123 Broadway,Providence,RI,01,Providence Core,Service Call,Normal jobs,41.8240,-71.4128,2026-03-03,28,,,,FALSE,0,0,,,Annual boiler service
+SM8-10510,456 Hope St,Providence,RI,01,Providence Core,Boiler Maintenance,Normal jobs,41.8365,-71.3985,2026-03-17,14,,,,FALSE,0,0,,,Routine boiler maintenance
+SM8-10588,789 Elmwood Ave,Providence,RI,02,Providence South,Steam System Inspection,Normal jobs,41.8010,-71.4180,2026-03-10,21,,,,FALSE,0,0,,,Steam system inspection
+SM8-10631,34 Wickenden St,Providence,RI,01,Providence Core,Vent / Trap / Repair / Piping Work,Priority,41.8195,-71.4005,2026-01-15,75,2.5,,,TRUE,0,0,,,Vent and trap repair - overdue
+SM8-10677,88 Atwells Ave,Providence,RI,03,Federal Hill,Service Call,Normal jobs,41.8260,-71.4260,2026-03-20,11,,,,FALSE,0,0,,,Thermostat issue
+SM8-10690,22 Thayer St,Providence,RI,01,Providence Core,Estimate,Requested Scheduling,41.8285,-71.4010,2026-03-12,19,,,,FALSE,1,0,Tuesday or Thursday mornings preferred,,Estimate for new system
+SM8-10491,55 Westminster St,Providence,RI,01,Providence Core,Go Back,Normal jobs,41.8230,-71.4175,2026-03-24,7,,,,FALSE,0,0,,,Follow-up from prior visit
+SM8-20311,100 Broad St,Cranston,RI,04,Cranston,Boiler Maintenance,Normal jobs,41.7735,-71.4375,2026-03-05,26,,,,FALSE,0,0,,,Annual boiler maintenance
+SM8-20314,210 Reservoir Ave,Cranston,RI,04,Cranston,Trap Service,Normal jobs,41.7680,-71.4290,2026-03-14,17,1.5,,,FALSE,0,0,,,Trap service - 3 traps
+SM8-20319,45 Phenix Ave,Cranston,RI,04,Cranston,Service Call,Accepted Quotes,41.7620,-71.4400,2026-02-20,39,3.0,,,FALSE,0,0,,1050.0,Accepted quote for piping work
+SM8-20341,78 Pontiac Ave,Cranston,RI,04,Cranston,Insulation,Normal jobs,41.7700,-71.4330,2026-03-18,13,2.0,,,FALSE,0,0,,,Pipe insulation job
+SM8-20356,300 Park Ave,Cranston,RI,04,Cranston,New Boiler Visit,Normal jobs,41.7750,-71.4350,2026-03-22,9,,,,FALSE,0,0,,,New boiler visit consultation
+SM8-30402,15 Monticello Rd,Providence,RI,05,Refinisher,Radiator Replacement,Normal jobs,41.8180,-71.4350,2026-03-08,23,,3,Providence,FALSE,0,0,,,Radiator replacement - 3 units
+SM8-30405,15 Monticello Rd,Providence,RI,05,Refinisher,Radiator Pick-Up,Normal jobs,41.8180,-71.4350,2026-03-15,16,,2,Providence,FALSE,0,0,,,Radiator pickup for refinishing
+SM8-30411,67 Valley St,Providence,RI,02,Providence South,Radiator Refinishing,Normal jobs,41.8100,-71.4220,2026-03-06,25,,4,Providence,FALSE,0,0,,,Radiator refinishing - 4 units
+SM8-30440,120 Charles St,Providence,RI,01,Providence Core,Radiator Service,Normal jobs,41.8280,-71.4100,2026-03-19,12,,,,FALSE,0,0,,,Radiator service
+SM8-30451,400 Admiral St,Providence,RI,03,Federal Hill,Radiator Replace & Refinish,Normal jobs,41.8340,-71.4350,2026-03-01,30,,2,Providence,FALSE,0,0,,,Replace and refinish 2 radiators
+SM8-40118,88 Main St,East Greenwich,RI,06,East Greenwich,Steam System Inspection,Normal jobs,41.6600,-71.4600,2026-03-02,29,,,,FALSE,0,0,,,Steam system inspection
+SM8-40127,55 Post Rd,Warwick,RI,07,Warwick,Service Call,Normal jobs,41.7000,-71.4170,2026-03-11,20,,,,FALSE,0,0,,,Service call
+SM8-40135,12 Hope St,Bristol,RI,08,Bristol,Boiler Maintenance,Normal jobs,41.6770,-71.2660,2026-03-04,27,,,,FALSE,0,0,,,Annual boiler maintenance
+SM8-50101,200 Thames St,Newport,RI,09,Newport,New Equipment Installation Other Than Boiler,Accepted Quotes,41.4880,-71.3130,2026-02-10,49,4.0,,,TRUE,0,0,,1400.0,New heat pump installation
+SM8-50102,90 Bellevue Ave,Newport,RI,09,Newport,Castrads New Radiator(s),Normal jobs,41.4750,-71.3100,2026-03-07,24,3.5,6,,FALSE,0,0,,,New Castrads radiator install - 6 units
+SM8-60201,45 Main St,Woonsocket,RI,10,Woonsocket,Service Call,Normal jobs,42.0030,-71.5150,2026-02-25,34,,,,TRUE,0,0,,,Service call - far north
+SM8-60202,33 Social St,Woonsocket,RI,10,Woonsocket,Boiler Maintenance,Normal jobs,42.0010,-71.5120,2026-03-13,18,,,,FALSE,0,1,,,Boiler maintenance - rebooked no notes
+SM8-70301,150 Main St,Pawtucket,RI,11,Pawtucket,Vent / Trap / Repair / Piping Work,Normal jobs,41.8780,-71.3830,2026-03-09,22,1.5,,,FALSE,0,0,,,Vent repair

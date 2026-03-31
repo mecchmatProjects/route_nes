@@ -1,5 +1,4 @@
 tech_id,name,skills,home_lat,home_lon,available_days
-T-01,Mike Sullivan,"boiler_service,radiator,steam_trap,install",43.2081,-71.5376,"Mon,Tue,Wed,Thu,Fri"
-T-02,Dave Patel,"boiler_service,steam_trap,zone_valve,pipe_repair",42.9956,-71.4548,"Mon,Tue,Wed,Thu,Fri"
-T-03,Chris O'Brien,"boiler_service,radiator,install,overhaul",43.0718,-70.7626,"Mon,Tue,Wed,Thu"
-T-04,Sam Torres,"boiler_service,steam_trap,pump,pipe_repair",42.7654,-71.4676,"Mon,Tue,Wed,Thu,Fri"
+T-01,Mike,"boiler_service,radiator,steam_trap,install,overhaul",41.8180,-71.4350,"Mon,Tue,Wed,Thu,Fri"
+T-02,Chris,"boiler_service,radiator,install,steam_trap",41.8240,-71.4128,"Mon,Tue,Wed,Thu,Fri"
+T-03,Dave,"boiler_service,steam_trap,radiator,overhaul",41.8240,-71.4128,"Mon,Tue,Wed,Thu,Fri"
