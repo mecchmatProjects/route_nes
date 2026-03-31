@@ -2,11 +2,11 @@
 
 ## 1. Problem Understanding
 
-New England SteamWorks needs a weekly dispatch-planning engine, not a booking workflow. The engine's job is to turn a prefiltered weekly candidate pool into reviewable route/day proposals that balance geography, capacity, technician and vehicle fit, special-route requirements, fairness, and area readiness.
+New England SteamWorks needs a weekly dispatch-planning engine — specifically a **draft-generation and review-support tool** for Ryan's manual ServiceM8 transcription, not a booking workflow or calendar app. The engine's job is to turn a four-payload input contract (Candidate Jobs, Weekly Context, Weekly Exceptions, Lookup/Rules Data) into a **transcription calendar** (5 weekday columns × 4 route rows) plus review artifacts (communications, maps, exclusion report) that Ryan can trust and transcribe.
 
-The core operational characteristic is route-first planning. The engine should not start from a calendar and try to fill days in isolation. It should first understand the weekly demand shape, the available weekly capacity, and the jobs that must be treated specially before normal route construction begins.
+The core operational characteristic is queue-based, route-first planning. The engine should first classify jobs by queue priority (Priority → AQ/RS → Normal, with seasonal variants), resolve exceptions and exclusions (Urgent / On Hold → excluded), then build routes using vehicle / tech / capacity / geography constraints.
 
-This is also not a black-box optimization problem. The brief is explicit that the system must remain maintainable, understandable by a non-technical owner, and easy to adjust over time. That favors a layered rules engine with transparent scoring over an opaque, fully solver-driven planner.
+This is also not a black-box optimization problem. The spec is explicit that the system must remain maintainable, understandable by a non-technical owner, and easy to adjust over time. That favors a layered decision-ladder engine with transparent ranking over an opaque, fully solver-driven planner.
 
 ## 2. Recommended Engine Structure
 
@@ -15,23 +15,25 @@ The Python engine should be organized as a pipeline with clear separation betwee
 Recommended layers:
 
 1. Input adapters
-   Read structured data from ServiceM8 and Airtable exports or API responses.
-2. Domain normalization
-   Convert raw records into stable internal models for jobs, technicians, vehicles, exceptions, and policy settings.
-3. Eligibility and hard-constraint evaluation
-   Remove impossible assignments and annotate jobs with exclusion reasons.
-4. Capacity builder
-   Compute true weekly route capacity from technician availability, vehicle availability, long jobs, installs, and route-type reservations.
-5. Special-route planner
-   Place Radiator Runs, NH Overnight Runs, and helper-required jobs before normal filling.
-6. Normal route proposal planner
-   Build geography-aware weekly route/day proposals using weighted scoring.
-7. Standby selector
-   Produce plausible substitute jobs by route and week.
-8. Review artifact generator
-   Emit maps, area readiness, route summaries, flags, and traceable outputs.
+   Load four-payload contract from Airtable CSV exports. Gracefully skip jobs with missing/bad geocodes.
+2. Domain normalisation
+   Convert raw records into typed dataclasses (Job with 17+ fields and computed properties, Technician, Vehicle, WeeklyContext, WeeklyException, AreaRule).
+3. Queue-based exclusion
+   Remove Urgent / On Hold jobs. Apply Weekly Exceptions (full tech-day blocks). Annotate excluded jobs with reason codes.
+4. Decision-ladder ranking
+   Winter: Priority → 2×-average Normal → AQ/RS → Normal. Summer: Priority → AQ/RS → Normal. Aging active in winter only.
+5. Eligibility filtering
+   VEH_WORK_ELIGIBLE, ROUTE_SHAPE_OK, POSITION_OK, TECH_AVAILABLE, VEH_AVAILABLE, CAPACITY_OK, TIME_OK, ONE_VEH_PER_TECH, ONE_TECH_PER_VEH.
+6. Route shaping
+   Build geography-aware route/day proposals. Route targets: winter 4 booked + 2 standby, summer 3 booked + 2 standby. V-4 overflow toggle.
+7. Helper flagging
+   Per route/day yes/no flag. If any job on a route needs a helper, the route is helper-required. Configurable count (default 2). No named assignment.
+8. Standby + anchor-hold identification
+   Rank 2 standby jobs per route. Tag anchor-hold jobs. Replacement Job / Replacement Route callable workflows.
+9. Review artifact generator
+   Transcription calendar (5×4 grid), Pre-Route Communications, Route Communications, per-route maps, exclusion report.
 
-This structure matches the brief's operational flow and gives a clean place for owner-managed policy settings without leaking those settings across the whole codebase.
+This structure matches the spec's operational flow (§6–§9) and gives a clean place for owner-managed policy settings without leaking those settings across the whole codebase.
 
 ## 3. Code vs Config vs Airtable Split
 
@@ -52,99 +54,111 @@ Code should contain deterministic logic that must remain consistent and testable
 
 Configuration should contain values that are stable but environment-specific or tunable by technical staff:
 
-- scoring weights by season
-- readiness thresholds
-- route size targets
+- T_max (daily time budget)
+- route targets (winter 4+2, summer 3+2)
+- booking-window parameters
 - distance and adjacency thresholds
 - standby selection limits
+- workload-review thresholds
 
-### Airtable-Managed Policy
+### Airtable-Managed Policy (Amy-Airtable ownership, spec §10)
 
 Airtable should manage owner-controlled policy that changes as the business evolves:
 
-- route-type definitions
-- helper-required flags
-- special handling rules
-- area labels and communication metadata
-- temporary planning overrides
-- review statuses and manual approval fields
+- Candidate Jobs export (17 fields per spec Table 3)
+- Weekly Context (season, V-4 toggle, helpers_available, holiday_list)
+- Weekly Exceptions (tech_or_slot, day, reason)
+- Lookup/Rules Data (radiator-hours table, area grouping rules)
+- Review statuses and communication records (Pre-Route / Route)
+
+### Shared ownership (spec §10)
+
+- Field dictionary (addendum Tables 1–4) is the binding interface contract.
+- Changes to field names or types require coordinated Airtable + code updates.
 
 This split keeps the engine disciplined. If too much policy goes into code, maintenance slows down. If too much algorithmic logic goes into Airtable formulas, testing and explainability degrade.
 
-## 4. Hard Constraints vs Weighted Logic
+## 4. Hard Constraints vs Decision-Ladder Ranking
 
-The brief supports a mixed model.
+The spec supports a mixed model.
 
-Hard constraints should govern whether something is allowed at all. Weighted logic should govern preference among allowed options.
+Hard constraints (eligibility checks) govern whether something is allowed at all. The decision ladder governs preference among allowed options by queue tier, not by numeric score.
 
-Hard constraints include:
+Hard constraints (eligibility checks) include:
 
-- job is eligible for this week's planning pool
-- technician is available this week
-- required vehicle is available
-- route type prerequisites are satisfied
-- helper-required jobs have adequate staffing
-- prohibited pairings are not allowed
+- VEH_WORK_ELIGIBLE — vehicle type can handle the job category
+- ROUTE_SHAPE_OK — job fits the geographic shape of the route
+- POSITION_OK — no scheduling conflicts (booking-window, duplicate day)
+- TECH_AVAILABLE — technician not blocked by Weekly Exception
+- VEH_AVAILABLE — vehicle not blocked for the day
+- CAPACITY_OK — route not at capacity (winter 4, summer 3 booked slots)
+- TIME_OK — total service + travel fits within T_max
+- ONE_VEH_PER_TECH / ONE_TECH_PER_VEH — pairing uniqueness per day
 
-Weighted logic includes:
+Queue-based decision-ladder ranking (replaces weighted scoring):
 
-- geographic compactness
-- seasonal fairness pressure
-- aging pressure
-- area readiness improvement
-- standby usefulness
-- route practicality when areas slightly cross over
+- Winter: Priority → 2×-average Normal → AQ/RS (equal tier) → Normal
+- Summer: Priority → AQ/RS (equal tier) → Normal
+- Aging active in winter only
+- Geographic compactness evaluated within each tier
 
-This is the right tradeoff for Version 1 because the business appears rules-heavy but still judgment-driven.
+This is the right tradeoff for the Initial build because the business is rules-heavy and queue-driven, not numerically optimised.
 
-## 5. Geography, Fairness, and Area Readiness Interaction
+## 5. Geography, Queue Priority, and Area Readiness Interaction
 
 Geography should be the base organizing principle. The weekly plan should produce routes that are spatially coherent and reviewable.
 
-Fairness should adjust which jobs rise within feasible geographic clusters. It should not routinely destroy route shape.
+Queue priority determines which jobs rise within feasible geographic clusters. The decision ladder (not a numeric scoring formula) governs tier placement. Within each tier, geographic fit and aging break ties.
 
-Seasonal variation should change the scoring balance:
+Seasonal variation selects the decision-ladder variant:
 
-- March through September: stronger emphasis on clean geography.
-- October through February: stronger emphasis on fairness and aging, constrained by geographic sanity.
+- Summer (roughly March–September): Priority → AQ/RS → Normal. Geography dominates.
+- Winter (roughly October–February): Priority → 2×-average Normal → AQ/RS → Normal. Aging pressure elevates long-waiting jobs.
 
-Area Readiness should not drive route construction directly as a hard wall. It should be derived from the shape and density of actual proposed activity so that customer communication remains credible.
+The `season` value is supplied per-week in the Weekly Context payload; Ryan selects it.
 
-## 6. Version 1 Recommendation
+Area Readiness is optional / pending Amy (spec §8). When active, it adds adjacency/grouping constraints to route shaping. It should not drive route construction directly as a hard wall.
 
-Version 1 should be a transparent, rules-driven weekly planner with weighted scoring and review artifacts.
+## 6. Initial Build Recommendation
 
-Recommended Version 1 behavior:
+The Initial build should be a transparent, queue-driven weekly planner with a decision-ladder and review artifacts.
 
-- use explicit hard filters before scoring
-- pre-build weekly capacity from real exceptions
-- place special routes first
-- cluster and score normal routes second
-- generate standby jobs separately
-- emit route maps, flags, and readiness outputs
-- avoid direct calendar writes
-- avoid exact stop-order optimization
+Recommended Initial build behavior:
 
-Recommended Version 1 implementation style:
+- exclude Urgent / On Hold jobs by queue
+- apply Weekly Exceptions (full tech-day blocks)
+- rank by seasonal decision ladder, not composite scores
+- check eligibility via named rules (VEH_WORK_ELIGIBLE, ROUTE_SHAPE_OK, etc.)
+- shape routes with geography + vehicle constraints
+- flag helper-required routes (yes/no, no named assignment)
+- generate 2 standby jobs per route, identify anchor-holds
+- emit transcription calendar, communications, per-route maps, exclusion report
+- support 3 callable workflows: Weekly Run, Replacement Job, Replacement Route
+- avoid direct ServiceM8 writes — Ryan transcribes manually
+
+Recommended Initial build implementation style:
 
 - pure Python planning core
-- configuration-driven weights and thresholds
+- configuration-driven thresholds (T_max, route targets, booking windows)
 - traceable reason codes on exclusions and route assignments
-- stable output schemas for downstream Airtable and automation consumption
+- four-payload input contract as the binding interface
+- live-week testing with real data; Thursday deadline; two-failure pause rule
 
 ## 7. Major Risks and Ambiguities
 
-The main discovery risks are not algorithmic complexity. They are policy clarity and data shape clarity.
+The Build Spec v7 and Clarification Addendum resolved most of the original discovery risks. Remaining items:
 
-Highest-risk ambiguities:
-
-1. exact input schemas from ServiceM8 and Airtable
-2. detailed business rules for special route types
-3. formal definitions for area readiness thresholds
-4. how route capacity should be represented when long jobs partially consume a technician-week
-5. what level of geographic precision is available and trustworthy
-
-If these are left vague, the engine can still be built, but the first implementation will carry more assumptions than is ideal.
+| Risk | Status |
+|---|---|
+| Exact input schemas | ✅ RESOLVED — Four-payload field dictionaries in spec Tables 3–6 + addendum. |
+| Special route type rules | ✅ RESOLVED — 17-category table with planned-hours sources, V-2/V-4 restrictions. |
+| Area readiness thresholds | ⚠️ OPEN — Optional / pending Amy. |
+| Route capacity representation | ✅ RESOLVED — Winter 4+2, Summer 3+2 per route; booking-window feasibility check. |
+| Geographic precision | ✅ RESOLVED — Google Maps lat/lon + Distance Matrix; bad geocodes gracefully skipped. |
+| 2×-average-wait trigger | ⚠️ OPEN — Airtable will supply the flag; field/formula unspecified. |
+| Radiator-hours table values | ⚠️ OPEN — Ryan needs to set initial values. |
+| Named helper assignment | ✅ RESOLVED — Deferred; yes/no flag only. |
+| Revision-code logic | ✅ DEFERRED — Until testing reveals real failure modes. |
 
 ## 8. Validation and Testing Approach
 
@@ -167,4 +181,4 @@ Recommended test strategy:
 
 ## 9. Recommendation Summary
 
-The strongest Version 1 is a practical rules-and-scoring engine that produces explainable weekly route proposals and review artifacts. The main pitfall to avoid is jumping too early into heavy optimization or automation before the policy model is stable and observable.
+The strongest Initial build is a queue-driven decision-ladder engine that produces an explainable transcription calendar, structured communications, and review artifacts. The main pitfall to avoid is jumping too early into heavy optimization or automation before the policy model is stable and observable through live-week testing.

@@ -1,28 +1,37 @@
 """Pre-run input validation.
 
-Checks from Technical Sketch §5 Stage 1:
+Aligned with NES Python Scheduling Engine Build Spec v7 §14.2.
+Checks:
   - Required CSV columns present
   - Coordinates within NE bounding box
-  - Referential integrity (exception scope_id → tech/vehicle)
+  - Referential integrity (exception tech_or_slot → tech)
   - No duplicate primary keys
   - Config schema valid (all keys present, in range)
   - At least one feasible (tech, vehicle, day) triple after exceptions
+  - Job-category and queue membership
+  - Planned-hours fallback coverage
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from .models import WeeklyData, ReviewFlag
+from .models import (
+    WeeklyData, ReviewFlag,
+    ALL_CATEGORIES, ELIGIBLE_QUEUES, EXCLUDED_QUEUES,
+)
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
 VALID_DAYS = {"Mon", "Tue", "Wed", "Thu", "Fri"}
-VALID_ROUTE_TYPES = {"normal", "radiator", "nh_overnight", "helper"}
-VALID_STATUSES = {"candidate", "excluded", "cancelled", "assigned"}
+VALID_FULL_DAYS = {
+    "Monday", "Tuesday", "Wednesday", "Thursday", "Friday",
+    "Mon", "Tue", "Wed", "Thu", "Fri",
+}
+VALID_QUEUES = ELIGIBLE_QUEUES | EXCLUDED_QUEUES
 VALID_SCOPE_TYPES = {"technician", "vehicle"}
-VALID_EFFECT_TYPES = {"unavailable", "partial"}
+VALID_EXCEPTION_TYPES = {"Full technician-day block"}
 
 REQUIRED_CONFIG_KEYS = {
     "T_max_minutes", "T_max_phase1_fraction", "P_max_stops",
@@ -39,12 +48,11 @@ def _effective_days(
     scope_type: str,
     wd: WeeklyData,
 ) -> set[str]:
-    """Return available days after removing 'unavailable' exceptions."""
+    """Return available days after removing blocked exceptions."""
     removed = {
         ex.day
         for ex in wd.exceptions
-        if ex.scope_type == scope_type
-        and ex.scope_id == entity_id
+        if ex.scope_id == entity_id
         and ex.effect_type == "unavailable"
     }
     return set(base_days) - removed
@@ -100,20 +108,20 @@ def validate_inputs(
 
     # 3. Enum / value sanity ─────────────────────────────────────────────────
     for j in wd.jobs:
-        if j.route_type not in VALID_ROUTE_TYPES:
+        if j.queue not in VALID_QUEUES:
             errors.append(
-                f"INVALID_ROUTE_TYPE: job {j.job_id} has '{j.route_type}'"
+                f"INVALID_QUEUE: job {j.job_id} has '{j.queue}'"
             )
-        if j.status not in VALID_STATUSES:
+        if j.job_category not in ALL_CATEGORIES:
             errors.append(
-                f"INVALID_STATUS: job {j.job_id} has '{j.status}'"
+                f"INVALID_CATEGORY: job {j.job_id} has '{j.job_category}'"
             )
         if j.service_time_min < 0:
             errors.append(
                 f"NEGATIVE_SERVICE_TIME: job {j.job_id}"
             )
-        if j.value < 0:
-            errors.append(f"NEGATIVE_VALUE: job {j.job_id}")
+        if j.age_days < 0:
+            errors.append(f"NEGATIVE_AGE: job {j.job_id}")
 
     for t in wd.technicians:
         for day in t.available_days:
@@ -134,35 +142,21 @@ def validate_inputs(
             )
 
     for ex in wd.exceptions:
-        if ex.scope_type not in VALID_SCOPE_TYPES:
+        if ex.affected_day not in VALID_FULL_DAYS:
             errors.append(
-                f"INVALID_SCOPE_TYPE: exception {ex.exception_id} "
-                f"has '{ex.scope_type}'"
-            )
-        if ex.effect_type not in VALID_EFFECT_TYPES:
-            errors.append(
-                f"INVALID_EFFECT_TYPE: exception {ex.exception_id} "
-                f"has '{ex.effect_type}'"
-            )
-        if ex.day not in VALID_DAYS:
-            errors.append(
-                f"INVALID_DAY: exception {ex.exception_id} has '{ex.day}'"
+                f"INVALID_DAY: exception {ex.exception_id} has '{ex.affected_day}'"
             )
 
-    # 4. Referential integrity — exception scope_ids ─────────────────────────
+    # 4. Referential integrity — exception tech_or_slot → technician ─────────
     tech_ids = {t.tech_id for t in wd.technicians}
-    veh_ids = {v.vehicle_id for v in wd.vehicles}
+    tech_names = {t.name for t in wd.technicians}
+    valid_refs = tech_ids | tech_names
 
     for ex in wd.exceptions:
-        if ex.scope_type == "technician" and ex.scope_id not in tech_ids:
+        if ex.tech_or_slot not in valid_refs:
             errors.append(
                 f"REF_INTEGRITY: exception {ex.exception_id} references "
-                f"unknown tech '{ex.scope_id}'"
-            )
-        if ex.scope_type == "vehicle" and ex.scope_id not in veh_ids:
-            errors.append(
-                f"REF_INTEGRITY: exception {ex.exception_id} references "
-                f"unknown vehicle '{ex.scope_id}'"
+                f"unknown tech/slot '{ex.tech_or_slot}'"
             )
 
     # 5. Config schema ───────────────────────────────────────────────────────

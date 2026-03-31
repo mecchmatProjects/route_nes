@@ -10,41 +10,53 @@ The target is a maintainable, rules-driven weekly planning engine for New Englan
 
 ### In Scope
 
-- Weekly dispatch-planning logic in Python.
-- Candidate-job evaluation for the current planning week.
-- Geographic grouping and route/day proposal generation.
-- Technician and vehicle compatibility checks.
-- Weekly exception handling.
-- Special route handling before normal route filling.
-- Standby job selection.
-- Area readiness output.
+- Weekly draft schedule generation for Ryan's review and manual ServiceM8 transcription.
+- Three callable workflows: Weekly Run, Replacement Job, Replacement Route.
+- Four-payload input contract: Candidate Jobs, Weekly Context, Weekly Exceptions, Lookup/Rules Data.
+- Queue-based decision-ladder ranking (winter / summer variants).
+- Geographic grouping and route/day proposal generation (clusters, corridors, Providence-assisted).
+- Vehicle work-type constraints (V-2 radiator-only, V-4 overflow restrictions).
+- Weekly exception handling (full technician-day blocks in Initial build).
+- Special route handling before normal route filling (radiator, NH overnight, Two-Man).
+- Helper-required flagging per route/day (yes/no, not named assignment).
+- Standby job selection (2 lowest-priority per route).
+- Anchor-hold identification.
+- Booking-window feasibility flagging and first-only / last-only constraints.
+- Pre-Route and Route Communications (one record per issue).
+- Transcription-calendar output (5 weekday × 4 route-row grid; job numbers only).
 - Map generation for each proposed route/day.
-- Structured outputs for downstream review and automation.
+- Area readiness output (optional / pending Amy).
 
 ### Out of Scope
 
-- Full production implementation.
-- UI design.
-- Airtable base implementation.
-- Make or Zapier workflow design.
 - Direct writes into the ServiceM8 calendar.
-- Exact stop sequencing.
-- Appointment-time assignment.
+- Customer booking or invitation management.
+- Assigning specific helpers by name.
+- Full downstream Airtable / ServiceM8 invite lifecycle.
+- Appointment-time optimization.
+- Revision-code logic (deferred until testing).
+- Generic freeform communication button.
+- Airtable base implementation or UI design.
 - Machine learning features.
-- Overbuilt optimization architecture unless clearly required by Version 1.
+- Overbuilt optimization architecture.
 
 ## 3. System Boundaries
 
 ### Systems
 
 - ServiceM8: system of record for jobs and operational data.
-- Airtable: scheduling rules, structured inputs, review layers, and outputs.
-- Make or Zapier: orchestration and automation.
-- Python engine: planning, evaluation, scoring, proposal generation, and output packaging.
+- Airtable: scheduling rules, structured inputs, review layers, outputs, radiator-hours table, and communication surfaces.
+- Python engine: planning, evaluation, ranking, proposal generation, and output packaging.
+
+### Ownership Boundaries (spec §10)
+
+| Freelancer owns | Amy / Airtable owns | Shared interface |
+|---|---|---|
+| Weekly engine logic; route selection; geography logic; aging/fairness application; helper-required flags; route maps; draft schedule outputs; replacement/day-recovery recommendation logic. | Airtable display/storage; dashboard/workflow UX; queue/status automations; ServiceM8 note-writing and message generation; radiator-hours table. | Input/export schemas; review handoff; replacement/rebuild triggers/buttons; any Area Readiness storage/display split. |
 
 ### Boundary Rule
 
-The Python engine must be independently understandable and testable. It should consume structured inputs and produce structured outputs without embedding Airtable or automation-specific logic deep inside the planning core.
+The Python engine must be independently understandable and testable. It should consume structured inputs (four-payload contract) and produce structured outputs without embedding Airtable or automation-specific logic inside the planning core.
 
 ## 4. Planning Model
 
@@ -55,28 +67,31 @@ The Python engine must be independently understandable and testable. It should c
 
 ### Required Planning Stages
 
-1. Load the weekly candidate pool.
-2. Subtract exclusions and jobs already handled elsewhere.
-3. Apply weekly exceptions and real capacity reductions.
-4. Reserve capacity for special route types first.
-5. Build normal route/day proposals.
-6. Select backup or standby jobs.
-7. Compute area readiness outputs.
-8. Produce maps and structured review artifacts.
+1. Load and validate the four input payloads.
+2. Exclude by queue (Urgent, On Hold).
+3. Apply weekly exceptions (full technician-day blocks).
+4. Reserve capacity for special route types first (radiator V-2, NH, Two-Man).
+5. Rank and schedule normal jobs via queue-based decision ladder.
+6. Order stops via nearest-neighbour + feasibility verification.
+7. Select standby jobs (2 per route) and identify anchor-hold jobs.
+8. Generate Pre-Route Communications, Route Communications, transcription calendar, maps, flags, and exclusion report.
+9. Compute area readiness (optional / pending Amy).
 
 ## 5. Functional Requirements
 
 ### 5.1 Candidate Pool Processing
 
-- The engine shall accept a prefiltered candidate pool for the target week.
-- The engine shall assume jobs already scheduled, canceled, urgent/manual, already in workflow, or otherwise excluded are removed before normal planning.
-- The engine shall still support explicit exclusion flags in case upstream filtering is incomplete.
+- The engine shall accept a prefiltered candidate pool of eligible Work Order jobs.
+- The engine shall assume jobs already scheduled, canceled, or manually handled as Urgent are excluded upstream before the engine runs (spec §3).
+- The engine shall exclude Urgent and On Hold queues. All other queue values pass to planning.
+- Queue placement is the main control layer; current status is not a required engine input (spec §13).
 
 ### 5.2 Weekly Exceptions
 
 - The engine shall incorporate weekly exceptions before route filling.
-- Weekly exceptions shall include at least technician unavailability, vehicle unavailability, pre-scheduled long jobs, and boiler installs already consuming capacity.
-- Weekly capacity shall be computed from weekly exceptions, not only from technician master data.
+- Initial build exceptions are full technician-day blocks only (spec §5, Table 5).
+- Weekly Exceptions are the authoritative source of within-week availability reduction.
+- Pre-existing calendar load is represented through Weekly Exceptions, not live ServiceM8 calendar access (spec §13).
 
 ### 5.3 Geography and Route Grouping
 
@@ -93,61 +108,68 @@ The Python engine must be independently understandable and testable. It should c
 
 ### 5.5 Human Review Model
 
-- The engine shall output a draft schedule for human review.
-- The engine shall not auto-book jobs into the calendar.
-- The engine shall not promise dates early.
-- The engine shall not assign exact stop order or appointment times in Version 1.
+- The engine shall output a draft transcription calendar for Ryan's review and manual ServiceM8 transcription.
+- The engine shall not auto-write into the ServiceM8 calendar.
+- The engine shall not directly book customers or send invitations.
+- Ryan-to-AI actions use standard buttons: Run AI Analysis, Approve, Reject / Re-run, Replacement Job, Replacement Route.
+- Acceptance standard: most live weeks should be approved by Ryan with no changes (spec §14.4).
 
 ### 5.6 Special Route Types
 
 - The engine shall process special route types before normal route filling.
-- Version 1 must explicitly support:
+- Initial build must explicitly support:
   - Radiator Runs
   - NH Overnight Runs
   - Two-Man or helper-needed routes
 
-### 5.7 Vehicle Rules
+### 5.7 Vehicle Rules (spec Table 8)
 
-- The engine shall enforce vehicle constraints when building capacity and route proposals.
-- V-2 shall be used for Radiator Runs.
-- V-4 shall act as a weekly capacity switch.
-- V-5, V-6, and V-7 shall be treated as standard service vehicles.
+- Three main vehicles are functionally equivalent — no restrictions between them.
+- V-2 is radiator-only always. Do not use as a normal standard route.
+- V-4 is a light overflow route (winter only, toggled via Weekly Context). Allowed: steam system inspections, service calls, boiler maintenance. Cannot do Accepted Quotes or helper-required / Two-Man routes.
+- Current practical daily route capacity is 4 route slots: 3 named technicians + V-4 when active.
 
-### 5.8 Standby Jobs
+### 5.8 Standby Jobs and Day-Recovery
 
 - The engine shall output assigned jobs separately from standby jobs.
-- Standby jobs shall be plausible replacement jobs that can be used when assigned jobs drop out.
+- Standby jobs are the 2 lowest-priority jobs among otherwise acceptable route candidates (spec §7).
+- If enough valid standby jobs do not exist, the route normally should not run unless work is thin.
+- The engine must also support Replacement Job (up to 2 unranked candidates) and Replacement Route (rebuild one day) as callable workflows (spec §7, §14.3).
 
 ### 5.9 Duplicate Address Handling
 
-- The engine shall detect duplicate-address or same-address job groups.
-- The engine shall flag these groups for review.
-- The engine shall not silently delete them.
-- Same-address jobs shall not inflate stop density when evaluating route shape.
+- Duplicate policing should primarily happen upstream in Airtable before Python scheduling begins (spec §8.2).
+- If a suspected duplicate still slips through, Python may surface it through Pre-Route Communications.
+- Multiple radiator replacement slave jobs at 15 Monticello, Providence must never be treated as duplicates.
+- Where duplicate review is still needed, the flag should be minimal: Job # and what needs fixing.
 
 ### 5.10 Area Readiness
 
-- The engine shall output Area Readiness as a communication layer.
-- Allowed readiness values shall be `Good`, `Moderate`, and `Lean`.
-- The engine shall also produce a plain-text lookup block for downstream use.
+- Area Readiness scope is optional / pending Amy (spec §10.2, §12).
+- Current best assumption: if Airtable can calculate it, Airtable should own it.
+- The engine does not need to own Area Readiness calculation in Initial build unless later directed.
 
 ### 5.11 Maps
 
 - The engine shall generate a plotted map for each proposed route/day.
-- Maps are a required review artifact.
-- **Implemented:** `nes_dispatch/mapping.py` renders per-route PNG maps using OSMnx road-network graphs and Matplotlib. Each map shows road-following colored route segments, a red depot marker, and green stop markers. `save_maps.py` writes output to `output/maps/`.
+- Maps must include: job pins labelled with Job #, job category, and planned hours; vehicle colour coding; route notes.
+- Five pre-route maps should be delivered on the Schedule Week record in the first interface.
+- **Implemented:** `nes_dispatch/mapping.py` renders per-route PNG maps.
 
 ## 6. Data and Configuration Requirements
 
-### Required Inputs
+### Required Inputs (four-payload contract, spec §2)
 
-- Candidate jobs for the planning week.
-- Job geography and address data.
-- Area assignments or area metadata.
-- Technician roster and technician capabilities.
-- Vehicle roster and vehicle capabilities.
-- Weekly exceptions.
-- Policy settings for geography, fairness, and route behavior.
+1. **Candidate Jobs** — job ID, created date/age, address, city, state, area number/name, job category, queue, required job hours, total job amount, radiator count, refinisher location, 2×-average flag, rebook counts, scheduling preference.
+2. **Weekly Context** — week of, season, include V-4, holiday list, linked exceptions.
+3. **Weekly Exceptions** — exception ID, week of, tech/slot, exception type (full-day block), affected day, notes.
+4. **Lookup / Rules Data** — technician/vehicle/area lookup, area naming, adjacency/grouping rules, restriction flags.
+
+### Derived by Python
+
+- Drive times / travel-time calculations at runtime via a real routing service (Google Maps).
+- Geocodes when Airtable cannot supply them (Python fallback; skip job if geocoding fails).
+- Planned hours via category-based rules (fixed, Required Job Hours, radiator-hours table, AQ fallback).
 - Special-route definitions.
 
 ### Configuration Principle
@@ -158,13 +180,15 @@ The Python engine must be independently understandable and testable. It should c
 
 ## 7. Output Requirements
 
-### Primary Outputs
+### Primary Outputs (spec Table 12)
 
-- Proposed weekly route/day assignments.
-- Standby job list.
-- Route maps.
-- Area readiness values.
-- Review flags and exception notes.
+- Transcription-calendar output (5 weekday × 4 route-row grid; job numbers only).
+- Route grouping output (assigned, standby, anchor-hold jobs shown distinctly).
+- Route flags (helper required yes/no; first-only / last-only; odd-route explanation).
+- Day/route maps (labelled job pins, vehicle colour coding, route notes).
+- Pre-Route Communications (one record per issue, before ServiceM8 transcription).
+- Route Communications (one record per issue, post-sync route interface).
+- Area report / readiness (optional / pending Amy).
 
 ### Output Characteristics
 
@@ -180,38 +204,61 @@ The Python engine must be independently understandable and testable. It should c
 - The system shall support deterministic re-runs for the same inputs and configuration.
 - The design shall support testing even with limited historical engine-style data.
 
-## 9. Version 1 Requirements
+## 9. Initial Build Requirements
 
-Version 1 should:
+Initial build should:
 
-- Solve the weekly route proposal problem with transparent rules.
-- Prioritize clarity and maintainability over aggressive optimization.
+- Produce a reliable weekly draft transcription calendar plus review artifacts.
+- Implement three callable workflows: Weekly Run, Replacement Job, Replacement Route.
+- Use queue-based decision-ladder ranking (not composite scoring formula).
 - Use hard constraints for eligibility and safety.
-- Use weighted scoring for route quality, fairness, and backup selection.
-- Produce review-ready artifacts without writing directly to the operational calendar.
+- Produce Pre-Route and Route Communications (one record per issue).
+- Support booking-window feasibility flagging and first-only / last-only constraints.
+- Produce review-ready artifacts without writing directly to the ServiceM8 calendar.
+- Use real upcoming live scheduling weeks for testing (spec §14.4).
 
-Version 1 should not:
+Initial build should not:
 
-- Attempt exact route sequencing.
+- Assign specific helpers by name.
+- Compute final revision-code logic (deferred until testing).
 - Attempt appointment-time optimization.
 - Depend on speculative AI or predictive models.
 - Introduce solver-heavy architecture before simpler rule-driven planning is proven insufficient.
+- Own the full downstream Airtable / ServiceM8 invite lifecycle.
+- Build a generic freeform communication button.
+
+### Acceptance criteria (spec §14.4)
+
+- Testing uses the real upcoming live scheduling week.
+- Ryan may start as early as Monday; freelancer may revise up to Thursday.
+- If output is not usable by Thursday, Ryan reverts to manual for that week.
+- Most live weeks should be approved by Ryan with no changes.
+- If two live weeks fail, the project pauses automatically for review.
 
 ## 10. Risks and Ambiguities
 
-- Exact input schemas for ServiceM8 and Airtable are not defined in the brief.
-- Some route-type rules may contain additional exceptions not yet documented.
-- Area readiness calculation thresholds are not specified numerically.
-- Seasonal weighting is described conceptually, not mathematically.
-- Capacity modeling for long jobs and installs may require policy decisions before implementation.
+- Scheduling Preferences detail source — queue is settled, exact source of preference text pending Amy.
+- Radiator module — radiator-hour formulas live in Airtable, editable there; Ryan still needs to set first real values.
+- 2×-average-wait trigger source — Airtable will supply the flag.
+- Area Readiness final scope — optional / pending Amy.
+- Exception interaction channel — required system capability, implementation owner TBD.
+- Hosting/deployment details — technical handoff needed; should remain a compact appendix.
+
+### Superseded assumptions (spec §13)
+
+- Current status is not a required engine input.
+- "Backup jobs" → use assigned, standby, and anchor-hold.
+- Scheduling Preferences ≠ rebook-age rule.
+- V-4 is not a full equivalent route slot.
+- Pre-existing calendar load → via Weekly Exceptions, not live ServiceM8 access.
 
 ## 11. Acceptance Criteria For Discovery Phase
 
 The discovery work is complete when the repository contains:
 
-- A structured problem statement.
-- A recommended Python engine design.
-- A clear split between code, configuration, and Airtable-managed policy.
-- A rule classification into hard constraints, filters, weights, and review flags.
+- A structured problem statement aligned with the NES Build Spec v7.
+- A recommended Python engine design with three callable workflows.
+- A clear ownership-boundary split (Python / Airtable / Shared).
+- A rule classification into hard constraints, eligibility filters, decision-ladder ranking, and review flags.
 - A technical sketch of modules, schemas, and weekly run flow.
-- A Version 1 recommendation with explicit assumptions and risks.
+- An Initial build recommendation with explicit assumptions, deferred items, and live-week testing protocol.
