@@ -82,12 +82,15 @@ def _job(jid, lat=43.21, lon=-71.51, area="A-1", addr="123 Main St",
 
 passed = 0
 
-# ═══ Test 1: standby ranking — compatible jobs ══════════════════════════════
-# Route visits J1, unassigned J2 and J3 should be ranked as standby
+# ═══ Test 1: standby ranking — lowest-priority first ════════════════════════
+# Route visits J1, unassigned J2 and J3 should be ranked as standby.
+# Standby = lowest-priority acceptable candidates (spec §7).
+# J2 is younger (age=5) → lower decision-ladder score → selected as standby first.
+# J3 is older (age=30) → higher score → selected second.
 route = RouteResult("T-A", "V-A", "Mon", ["J1"], [], 5000.0, 60.0)
 j1 = _job("J1")
-j2 = _job("J2", lat=43.22, lon=-71.52)  # close to centroid
-j3 = _job("J3", lat=43.24, lon=-71.54)  # farther
+j2 = _job("J2", lat=43.22, lon=-71.52, age=5)   # younger → lower priority → standby first
+j3 = _job("J3", lat=43.24, lon=-71.54, age=30)   # older → higher priority → standby second
 unassigned = [j2, j3]
 
 standby = select_standby_per_route(
@@ -95,10 +98,11 @@ standby = select_standby_per_route(
 )
 key = ("T-A", "V-A", "Mon")
 assert key in standby, f"Expected key {key} in standby"
-assert standby[key][0] == "J2", f"J2 should rank first (closer), got {standby[key]}"
-assert standby[key][1] == "J3", f"J3 should rank second"
+assert len(standby[key]) == 2, f"Expected 2 standby, got {len(standby[key])}"
+assert standby[key][0] == "J2", f"J2 (younger) should be lowest-priority, got {standby[key]}"
+assert standby[key][1] == "J3", f"J3 (older) should be second standby"
 passed += 1
-print(f"  [PASS] Test 1: standby ranking = {standby[key]}")
+print(f"  [PASS] Test 1: standby ranking (lowest-priority first) = {standby[key]}")
 
 # ═══ Test 2: standby — cluster radius filtering ═════════════════════════════
 # Job far outside cluster radius should not appear

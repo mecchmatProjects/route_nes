@@ -96,8 +96,10 @@ def _age_score(job: Job) -> float:
 _TIER_PRIORITY          = 5000.0  # Priority queue — always first
 _TIER_2X_AVERAGE        = 4000.0  # 2x-average Normal (winter only)
 _TIER_AQ_RS             = 3000.0  # Accepted Quotes = Requested Scheduling
-_TIER_SCHED_PREF        = 2500.0  # Scheduling Preferences (early-pass pool)
 _TIER_NORMAL            = 1000.0  # Normal jobs
+# Scheduling Preferences: spec says "not a score boost" and "not part of
+# queue scoring."  SP jobs are scored at Normal tier; their preferences are
+# applied as hard constraints in a separate early pass, not via tier boost.
 
 
 def _ladder_tier(job: Job, season: str) -> float:
@@ -113,10 +115,8 @@ def _ladder_tier(job: Job, season: str) -> float:
     if q in ("Accepted Quotes", "Requested Scheduling"):
         return _TIER_AQ_RS
 
-    if q == "Scheduling Preferences":
-        return _TIER_SCHED_PREF
-
-    # Normal jobs (default)
+    # Scheduling Preferences and Normal jobs share the base tier.
+    # SP jobs are differentiated by hard preference constraints, not score.
     return _TIER_NORMAL
 
 

@@ -1,9 +1,9 @@
-"""10 named eligibility rules (Technical Sketch §5, Stage 5.2).
+"""Eligibility rules (Technical Sketch §5, Stage 5.2).
 
 Each rule is a standalone function:
     rule(job, tech, vehicle, day, ...) → (pass: bool, rule_name: str)
 
-check_eligibility() evaluates all 10 rules for a (job, tech, vehicle, day)
+check_eligibility() evaluates all rules for a (job, tech, vehicle, day)
 slot and returns the list of failing rule names (empty = eligible).
 """
 
@@ -28,6 +28,14 @@ def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 
 
 # ── Skill / capability requirement mapping ──────────────────────────────────
+
+# V-4 may carry only these categories (spec §5 / addendum Table 6).
+_V4_ALLOWED_CATEGORIES: set[str] = {
+    "Steam System Inspection",
+    "Service Call",
+    "Boiler Maintenance",
+}
+
 
 def _required_skills(job: Job) -> set[str]:
     if job.route_type == "radiator":
@@ -71,6 +79,18 @@ def veh_capability(vehicle: Vehicle, job: Job) -> bool:
     return _required_capabilities(job).issubset(set(vehicle.capability_tags))
 
 
+def veh_work_eligible(vehicle: Vehicle, job: Job) -> bool:
+    """VEH_WORK_ELIGIBLE: V-4 (overflow) restricted to allowed categories.
+
+    Spec §5 / addendum Table 6: V-4 may carry steam system inspections,
+    service calls, and boiler maintenance only.  Main vehicles have no
+    category restriction.
+    """
+    if vehicle.vehicle_type != "overflow":
+        return True
+    return job.job_category in _V4_ALLOWED_CATEGORIES
+
+
 def within_radius(
     tech: Technician, job: Job, R: float,
 ) -> bool:
@@ -97,6 +117,22 @@ def capacity_ok(
     """CAPACITY_OK: current stops for (k, d) < min(Q_k, P_max)"""
     current = stop_count.get((vehicle.vehicle_id, day), 0)
     return current < min(vehicle.capacity, P_max)
+
+
+def booked_cap(
+    vehicle: Vehicle,
+    day: str,
+    stop_count: dict[tuple[str, str], int],
+    max_booked: int,
+) -> bool:
+    """BOOKED_CAP: enforce seasonal booking target per route.
+
+    Spec §5: winter 4 booked + 2 standby (possible 5th when backlog high);
+    summer 3 booked + 2 standby.  The seasonal cap is checked here;
+    the physical vehicle capacity is checked by CAPACITY_OK.
+    """
+    current = stop_count.get((vehicle.vehicle_id, day), 0)
+    return current < max_booked
 
 
 def time_ok(
@@ -147,7 +183,7 @@ def check_eligibility(
     veh_tech: dict[tuple[str, str], str],
     prohibited_pairs: set[tuple[str, str]] | None = None,
 ) -> list[str]:
-    """Evaluate all 10 eligibility rules for a (job, tech, vehicle, day) slot.
+    """Evaluate eligibility rules for a (job, tech, vehicle, day) slot.
 
     Returns a list of *failing* rule names.  Empty list ⟹ slot is eligible.
     """
@@ -160,6 +196,13 @@ def check_eligibility(
     phase1_frac = config.get("T_max_phase1_fraction", 0.80)
     budget = T_max * phase1_frac
 
+    # Seasonal booking cap (spec §5): winter 4, summer 3
+    season = config.get("season", "winter").lower()
+    max_booked = config.get(
+        "max_booked_per_route",
+        4 if season == "winter" else 3,
+    )
+
     failures: list[str] = []
 
     if not tech_available(day, tech):
@@ -170,12 +213,16 @@ def check_eligibility(
         failures.append("SKILL_MATCH")
     if not veh_capability(vehicle, job):
         failures.append("VEH_CAPABILITY")
+    if not veh_work_eligible(vehicle, job):
+        failures.append("VEH_WORK_ELIGIBLE")
     if not within_radius(tech, job, R):
         failures.append("WITHIN_RADIUS")
     if not not_prohibited(tech, job, prohibited_pairs):
         failures.append("NOT_PROHIBITED")
     if not capacity_ok(vehicle, day, stop_count, P_max):
         failures.append("CAPACITY_OK")
+    if not booked_cap(vehicle, day, stop_count, max_booked):
+        failures.append("BOOKED_CAP")
     if not time_ok(tech, day, job, service_mins, budget):
         failures.append("TIME_OK")
     if not one_veh_per_tech(tech, vehicle, day, tech_veh):

@@ -17,7 +17,11 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any
 
-from ..data.models import Job, ReviewFlag, ScheduleAssignment, Technician
+from ..data.models import (
+    Job, ReviewFlag, ScheduleAssignment, Technician,
+    REQUIRED_HOURS_CATEGORIES, RADIATOR_HOURS_CATEGORIES,
+    ACCEPTED_QUOTE_CATEGORY,
+)
 from ..routing.distance import haversine_m
 
 
@@ -118,6 +122,40 @@ def flag_geocode_oob(
     return flags
 
 
+def flag_missing_planned_hours(
+    candidate_jobs: list[Job],
+) -> list[ReviewFlag]:
+    """Flag jobs in Required-Hours categories that lack required_job_hours.
+
+    Spec addendum §3: categories that use Required Job Hours for Scheduling
+    expect the field to be present.  When missing, the engine falls back to
+    1.0 h but surfaces a Pre-Route Communication warning for Ryan.
+    """
+    _needs_hours = (
+        REQUIRED_HOURS_CATEGORIES
+        | RADIATOR_HOURS_CATEGORIES
+        | {ACCEPTED_QUOTE_CATEGORY}
+    )
+    flags: list[ReviewFlag] = []
+    for j in candidate_jobs:
+        if j.job_category in _needs_hours and not j.required_job_hours:
+            # Accepted Quotes with total_job_amount can derive hours — skip
+            if (j.job_category == ACCEPTED_QUOTE_CATEGORY
+                    and j.total_job_amount and j.total_job_amount > 0):
+                continue
+            flags.append(ReviewFlag(
+                code="MISSING_PLANNED_HOURS",
+                severity="WARN",
+                message=(
+                    f"Job {j.job_id} (category '{j.job_category}') has no "
+                    f"Required Job Hours; engine defaulted to 1.0 h."
+                ),
+                refs={"job_id": j.job_id,
+                      "job_category": j.job_category},
+            ))
+    return flags
+
+
 # ── Aggregate entry point ──────────────────────────────────────────────────
 
 
@@ -131,6 +169,7 @@ def generate_review_flags(
     """Produce all post-processing review flags."""
     flags: list[ReviewFlag] = []
     flags.extend(flag_dup_addr(candidate_jobs))
+    flags.extend(flag_missing_planned_hours(candidate_jobs))
     flags.extend(flag_weak_standby(standby, config))
     flags.extend(flag_helper_travel(assignments, technicians, config))
     flags.extend(flag_geocode_oob(candidate_jobs, config))

@@ -17,16 +17,17 @@ from .data.models import (
     ScheduleAssignment,
     Technician,
     Vehicle,
+    WeeklyContext,
     WeeklyException,
 )
 from .rules.scoring import ScoredJob, score_jobs
 from .rules.slot_selection import find_best_eligible_slot, first_failing_rule
-from .rules.helpers import find_helper
 from .rules.workload import check_workload
 from .routing.nearest_neighbour import build_route
 from .postprocess.standby import select_standby_per_route
 from .postprocess.readiness import compute_area_readiness
 from .postprocess.flags import generate_review_flags
+from .postprocess.communications import generate_pre_route_comms, generate_route_comms
 
 
 # ── Geo helper ──────────────────────────────────────────────────────────────
@@ -45,31 +46,55 @@ def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return 2 * _EARTH_RADIUS_M * math.asin(math.sqrt(a))
 
 
+# ── Stage 1b: Apply Weekly Context ──────────────────────────────────────────
+
+# Vehicle IDs that are controlled by the include_v4 flag (spec §5).
+_V4_VEHICLE_IDS = {"V-4"}
+
+
+def apply_weekly_context(
+    vehicles: list[Vehicle],
+    context: WeeklyContext | None,
+) -> list[Vehicle]:
+    """Filter vehicles based on WeeklyContext flags.
+
+    When *context.include_v4* is False, Vehicle 4 is removed from the active
+    vehicle pool for the week (spec §5 / addendum Table 4).
+    Returns the filtered list (original list is not mutated).
+    """
+    if context is None:
+        return vehicles
+    if not context.include_v4:
+        return [v for v in vehicles if v.vehicle_id not in _V4_VEHICLE_IDS]
+    return vehicles
+
+
 # ── Stage 2: Exclusion Filters ──────────────────────────────────────────────
 
 
 def apply_exclusion_filters(
     jobs: list[Job],
 ) -> tuple[list[Job], list[Exclusion]]:
-    """Partition jobs into candidates and exclusions based on status.
+    """Partition jobs into candidates and exclusions based on queue.
 
+    Per spec §4: Urgent and On Hold queues are excluded from scheduling.
     Returns (candidates, exclusions).
     """
     candidates: list[Job] = []
     exclusions: list[Exclusion] = []
 
     for j in jobs:
-        if j.status == "assigned":
+        if j.queue == "Urgent":
             exclusions.append(Exclusion(
                 job_id=j.job_id,
-                reason_code="ALREADY_ASSIGNED",
-                detail=f"Job status is '{j.status}'",
+                reason_code="QUEUE_URGENT",
+                detail=f"Queue '{j.queue}' — handled outside weekly schedule",
             ))
-        elif j.status in {"excluded", "cancelled"}:
+        elif j.queue == "On Hold":
             exclusions.append(Exclusion(
                 job_id=j.job_id,
-                reason_code="STATUS_EXCLUDED",
-                detail=f"Job status is '{j.status}'",
+                reason_code="QUEUE_ON_HOLD",
+                detail=f"Queue '{j.queue}' — excluded until re-queued",
             ))
         else:
             candidates.append(j)
@@ -92,11 +117,12 @@ def apply_exceptions(
       the effect_value is preserved on the exception for later consumption.
     """
     tech_lookup = {t.tech_id: t for t in technicians}
+    tech_by_name = {t.name: t for t in technicians}
     veh_lookup = {v.vehicle_id: v for v in vehicles}
 
     for ex in exceptions:
         if ex.scope_type == "technician":
-            tech = tech_lookup.get(ex.scope_id)
+            tech = tech_lookup.get(ex.scope_id) or tech_by_name.get(ex.scope_id)
             if tech is None:
                 continue
             if ex.effect_type == "unavailable":
@@ -234,19 +260,8 @@ def plan_special_routes(
 
         tech_id, veh_id, day = best
 
-        # Find helper for two-man jobs
-        helper_id: str | None = None
-        if job.helper_needed:
-            helper_id = _find_helper_tech(
-                job, day, tech_id, technicians, R
-            )
-            if helper_id is None:
-                exclusions.append(Exclusion(
-                    job_id=job.job_id,
-                    reason_code="HELPER_UNAVAIL",
-                    detail="No second technician available for helper job",
-                ))
-                continue
+        # Flag helper requirement (spec §5: yes/no flag only, no named helper)
+        helper_flag = job.helper_needed
 
         # Commit assignment
         assignments.append(ScheduleAssignment(
@@ -254,7 +269,7 @@ def plan_special_routes(
             tech_id=tech_id,
             vehicle_id=veh_id,
             day=day,
-            helper_tech_id=helper_id,
+            helper_required=helper_flag,
         ))
         _commit_slot(
             tech_id, veh_id, day, job,
@@ -282,6 +297,13 @@ def _find_special_slot(
     Returns None if nothing is feasible.
     """
     P_max = config.get("P_max_stops", 14)
+    # Seasonal booking cap (spec §5): same logic as check_eligibility
+    season = config.get("season", "winter").lower()
+    max_booked = config.get(
+        "max_booked_per_route",
+        4 if season == "winter" else 3,
+    )
+    prohibited = config.get("prohibited_pairs", set())
     candidates: list[tuple[float, int, float, str, str, str]] = []
 
     for tech in technicians:
@@ -291,9 +313,17 @@ def _find_special_slot(
                             job.latitude, job.longitude)
         if dist > R:
             continue
+        # NOT_PROHIBITED
+        if (tech.tech_id, job.job_id) in prohibited:
+            continue
 
         for veh in vehicles:
             if not _vehicle_capable(veh, job):
+                continue
+            # VEH_WORK_ELIGIBLE (spec §5: V-4 category restriction)
+            if veh.vehicle_type == "overflow" and job.job_category not in {
+                "Steam System Inspection", "Service Call", "Boiler Maintenance",
+            }:
                 continue
             for day in tech.available_days:
                 if day not in veh.available_days:
@@ -308,6 +338,9 @@ def _find_special_slot(
                     continue
                 # CAPACITY_OK
                 if stop_count.get((veh.vehicle_id, day), 0) >= min(veh.capacity, P_max):
+                    continue
+                # BOOKED_CAP (spec §5: seasonal booking target)
+                if stop_count.get((veh.vehicle_id, day), 0) >= max_booked:
                     continue
                 # TIME_OK
                 if (service_mins.get((tech.tech_id, day), 0.0)
@@ -326,35 +359,6 @@ def _find_special_slot(
     candidates.sort()
     best = candidates[0]
     return best[3], best[4], best[5]
-
-
-def _find_helper_tech(
-    job: Job,
-    day: str,
-    primary_tech_id: str,
-    technicians: list[Technician],
-    R: float,
-) -> str | None:
-    """Find a second technician to assist on *day* for a helper job.
-
-    Must be available on the day, have matching skills, and be within radius.
-    Returns the helper tech_id or None.
-    """
-    best: tuple[float, str] | None = None
-    for tech in technicians:
-        if tech.tech_id == primary_tech_id:
-            continue
-        if day not in tech.available_days:
-            continue
-        if not _skill_match(tech, job):
-            continue
-        dist = _haversine_m(tech.home_lat, tech.home_lon,
-                            job.latitude, job.longitude)
-        if dist > R:
-            continue
-        if best is None or dist < best[0]:
-            best = (dist, tech.tech_id)
-    return best[1] if best else None
 
 
 def _commit_slot(
@@ -482,28 +486,13 @@ def run_phase1_schedule(
 
         tech_id, veh_id, day = best
 
-        # Helper pass for two-man jobs
-        helper_id: str | None = None
-        if job.helper_needed:
-            helper_id = find_helper(
-                job, day, tech_id, technicians, config,
-                service_mins, prohibited_pairs,
-            )
-            if helper_id is None:
-                exclusions.append(Exclusion(
-                    job_id=job.job_id,
-                    reason_code="HELPER_UNAVAIL",
-                    detail=f"No helper tech available for job {job.job_id} on {day}",
-                ))
-                continue
-
         # Commit the assignment
         assignments.append(ScheduleAssignment(
             job_id=job.job_id,
             tech_id=tech_id,
             vehicle_id=veh_id,
             day=day,
-            helper_tech_id=helper_id,
+            helper_required=job.helper_needed,
         ))
         _commit_slot(
             tech_id, veh_id, day, job,
@@ -594,6 +583,7 @@ def run_postprocessing(
     """Post-processing: standby ranking, area readiness, review flags.
 
     Returns (standby, readiness, flags).
+    Also populates standby_job_ids on each RouteResult.
     """
     # Determine unassigned candidates
     visited_ids: set[str] = set()
@@ -601,10 +591,15 @@ def run_postprocessing(
         visited_ids.update(r.visited_job_ids)
     unassigned = [j for j in candidate_jobs if j.job_id not in visited_ids]
 
-    # Standby ranking per route
+    # Standby ranking per route (spec §7: lowest-priority acceptable)
     standby = select_standby_per_route(
         routes, unassigned, technicians, vehicles, config,
     )
+
+    # Populate standby_job_ids on each RouteResult
+    for r in routes:
+        key = (r.tech_id, r.vehicle_id, r.day)
+        r.standby_job_ids = standby.get(key, [])
 
     # Area readiness
     readiness = compute_area_readiness(

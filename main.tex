@@ -88,15 +88,15 @@ A job cannot be in two queues at once.
 {\small
 \begin{longtable}{lcccp{5.5cm}}
 \toprule
-\textbf{Queue / State} & \textbf{Eligible?} & \textbf{Relative Tier} & \textbf{Geo Flex} & \textbf{Notes} \\
+\textbf{Queue / State} & \textbf{Eligible?} & \textbf{Relative Treatment} & \textbf{Geo Flex} & \textbf{Notes} \\
 \midrule
-Urgent          & No  & Manual only             & ---          & Always excluded from weekly engine (travel badge, emergency, weekend service). \\
-On Hold         & No  & Manual only             & ---          & Always excluded. \\
-Priority        & Yes & Highest                 & Substantial  & Ryan-only assignment by queue placement.  May serve as anchor. \\
-Accepted Quotes & Yes & Below Priority          & Substantial  & Always eligible once accepted.  Treat as always Two-Man in Initial Build.  Fragile route may use anchor-hold. \\
-Requested Scheduling & Yes & Fixed boost below Priority & Moderate & Ryan-only catchall boost queue.  May serve as anchor. \\
-Scheduling Preferences & Yes & Early-pass review pool & Moderate & Clear preferences are hard rules; vague notes flagged for Ryan.  Detail source pending. \\
-Normal jobs     & Yes & Base treatment           & Normal only  & No special boost unless 2$\times$-average threshold crossed in winter. \\
+Urgent          & No  & Manual only             & ---          & Always excluded from weekly engine.  Includes Travel Badge / expedited / emergency / weekend service once bumped to Urgent. \\
+On Hold         & No  & Manual only             & ---          & Always excluded.  No special override. \\
+Priority        & Yes & Highest manual boost    & Substantial  & Ryan-only assignment by queue placement.  No separate priority-reason field required.  Can justify substantial geography weakening; may serve as anchor. \\
+Accepted Quotes & Yes & Below Priority, above RS & Substantial  & Always eligible once accepted.  Treat as always Two-Man in Initial Build.  Substantial geography weakening allowed; fragile route may use anchor-hold. \\
+Requested Scheduling & Yes & Fixed boost below Priority & Moderate & Ryan-only catchall boost queue; includes overbooked jobs and other jobs Ryan wants boosted.  Moderate geography weakening allowed.  May serve as anchor. \\
+Scheduling Preferences & Yes & Early-pass review pool (not a score boost) & Moderate if needed & Clear preferences are hard rules; vague notes \textbf{must be flagged for Ryan and not scheduled until clarified}.  Checked after anchor/priority jobs and before normal jobs.  Detail source pending Amy. \\
+Normal jobs     & Yes & Base treatment           & Normal only  & Normal geography only unless the job has crossed the $2\times$-average threshold in winter.  No special queue boost. \\
 \bottomrule
 \end{longtable}
 }
@@ -104,6 +104,7 @@ Normal jobs     & Yes & Base treatment           & Normal only  & No special boo
 \paragraph{Rebook rule.}
 If a customer rebooks and leaves scheduling notes or preferences, the job keeps its place in line.
 If the customer rebooks with no notes, the job loses its place and aging restarts.
+This is separate from the broader Scheduling Preferences concept.
 
 % ===================================================================
 \section*{Sets and Indices}
@@ -112,7 +113,7 @@ If the customer rebooks with no notes, the job loses its place and aging restart
     \item $\mathcal{J} = \{1,\dots,J\}$ -- weekly candidate job pool (after exclusion filters and upstream pre-filtering to eligible Work Order jobs only).
     \item $\mathcal{J}^H = \{j \in \mathcal{J} : h_j = 1\}$ -- subset of two-man (helper-needed) jobs.
     \item $\mathcal{T} = \{1,\dots,T\}$ -- available technicians (currently 3 named technicians).
-    \item $\mathcal{K} = \{1,\dots,K\}$ -- available vehicles / route slots (currently 4: three main vehicles plus Van~4 when active).
+    \item $\mathcal{K} = \{1,\dots,K\}$ -- available vehicles (currently 5: three main V-1/V-3/V-5, one radiator V-2, plus overflow V-4 when \texttt{include\_v4}=true).  These serve \textbf{4 route slots}: 3~technician rows + Van~4 (V-2 replaces a main vehicle on radiator days, not an additional slot).
     \item $\mathcal{D} = \{1,\dots,D\}$ -- working days in the planning week ($D \leq 5$).
     \item $\mathcal{A}$ -- set of geographic areas / zones (identified by normalised two-digit area numbers).
 \end{itemize}
@@ -123,8 +124,9 @@ If the customer rebooks with no notes, the job loses its place and aging restart
 
 \subsection*{Vehicle and Route-Slot Model}
 
-Current practical daily route capacity is four route slots.
-The system should be written so additional slots can be added later.
+Current practical daily route capacity is \textbf{4 route slots}: the 3~named technicians plus Van~4 when active (addendum~\S3).
+Five physical vehicles serve these four slots.
+The system should be written so additional route slots can be added later if the business grows.
 
 \medskip
 {\small
@@ -132,9 +134,9 @@ The system should be written so additional slots can be added later.
 \toprule
 \textbf{Vehicle / Slot} & \textbf{Allowed Work} & \textbf{Restrictions} \\
 \midrule
-Main vehicles (3)  & Standard work, service calls, inspections, boiler maintenance, Accepted Quotes & Functionally equivalent; no special restrictions between them. \\
-Vehicle~2 (V-2)    & Radiator day only & Must not be used as a normal standard route in Initial Build. \\
-Vehicle~4 (V-4, winter) & Steam system inspections, service calls, boiler maintenance & Light/flexible overflow; cannot do Accepted Quotes or helper-required / Two-Man routes. \\
+Main vehicles (V-1, V-3, V-5)  & Standard work, service calls, inspections, boiler maintenance, Accepted Quotes & Functionally equivalent; no special restrictions between the three.  Each is driven by one named technician. \\
+Vehicle~2 (V-2)    & Radiator day only & \textbf{Not a separate route slot.} V-2 replaces a technician's main vehicle on radiator days; it does not add a 5th row to the transcription calendar. Must not be used as a normal standard route in Initial Build. \\
+Vehicle~4 (V-4, when active) & Steam system inspections, service calls, boiler maintenance \textbf{only} & The 4th route slot (overflow); \textbf{cannot} carry Accepted Quotes, Go Backs, Estimates, helper-required, or Two-Man jobs. Controlled by \texttt{include\_v4} flag in Weekly Context.  Not a full equivalent route slot; it is a lighter overflow route with work-type restrictions. \\
 NH route           & Normal age/queue/fairness logic still applies & Default structured overnight/Two-Man; one-day NH-border exception allowed and may be one-man. \\
 \bottomrule
 \end{longtable}
@@ -151,10 +153,16 @@ NH route           & Normal age/queue/fairness logic still applies & Default str
 \end{itemize}
 
 \subsection*{Route-Capacity Targets}
-\begin{itemize}
-    \item \textbf{Winter:} 4 booked + 2 standby per route (possible 5th booked job when backlog is high).
-    \item \textbf{Summer:} 3 booked + 2 standby per route.
-\end{itemize}
+Two capacity limits apply simultaneously to each (vehicle, day) slot:
+\begin{enumerate}
+    \item \textbf{Physical capacity} ($Q_k$, rule \texttt{CAPACITY\_OK}): the hard maximum stops the vehicle can physically hold. Differs by vehicle type (e.g.\ 14 for main trucks, 10 for V-4, 8 for V-2).
+    \item \textbf{Seasonal booking cap} (rule \texttt{BOOKED\_CAP}): the soft target number of booked jobs per route, set by the current season from Weekly Context:
+    \begin{itemize}
+        \item \textbf{Winter:} 4~booked + 2~standby per route (possible 5th booked when backlog is high).
+        \item \textbf{Summer:} 3~booked + 2~standby per route.
+    \end{itemize}
+\end{enumerate}
+The standby pool is capped at 2~candidates per route (spec~\S5).
 
 \subsection*{Technician Parameters}
 Each technician $t$ is characterised by:
@@ -193,14 +201,19 @@ Each job $j \in \mathcal{J}$ carries (per the Candidate Jobs field dictionary):
 \label{sec:scoring_model}
 
 The engine uses a short \textbf{decision-ladder} scoring model rather than a large point system.
+A job cannot be in two queues at once.
 Scoring rules are configurable so NES can tune behaviour after testing.
+
+\paragraph{Scheduling Preferences.}
+Scheduling Preferences are handled separately as an early-pass constraint/review layer and are \textbf{not part of queue scoring}.
+Jobs in this queue are scored at the same tier as Normal jobs; their preferences are applied as hard constraints (clear preferences) or flagged for Ryan (vague notes), not via a tier boost.
 
 \paragraph{Winter ranking order.}
 \begin{enumerate}
     \item Priority jobs first.
     \item Normal jobs that have crossed the $2\times$-average-wait threshold.
     \item Accepted Quotes and Requested Scheduling (equal tier; better route wins).
-    \item Normal jobs last.
+    \item Normal jobs last (including Scheduling Preferences jobs that passed preference checks).
 \end{enumerate}
 Within winter ranking, aging matters and older jobs are preferred, but route/geography must still make reasonable sense.
 A $2\times$-average job does not justify absurd isolation or nonsense geography.
@@ -209,7 +222,7 @@ A $2\times$-average job does not justify absurd isolation or nonsense geography.
 \begin{enumerate}
     \item Priority jobs first.
     \item Accepted Quotes and Requested Scheduling (equal tier; route quality decides).
-    \item Normal jobs last.
+    \item Normal jobs last (including Scheduling Preferences jobs that passed preference checks).
 \end{enumerate}
 In summer, aging is \emph{not} an active scoring factor for normal route selection.
 A $2\times$-average Normal job does not override Requested Scheduling in summer and does not beat a younger Normal job on aging alone.
@@ -226,6 +239,29 @@ Providence shop is an explicit routing factor in Initial Build.
     \item First-only / last-only always applies; queue status does not override it.
     \item Line/corridor routes are acceptable only when they flow sensibly without zigzagging.
 \end{itemize}
+
+\paragraph{Implementation status.}
+The current code uses \textbf{depot-to-job haversine distance} as a proxy for geographic quality.
+Full route-shape analysis (cluster tightness, corridor flow, zigzag detection), per-queue flexibility differentiation, and Providence-shop-as-routing-factor are spec requirements that map to the deferred \texttt{ROUTE\_SHAPE\_OK} and \texttt{POSITION\_OK} eligibility rules.
+The geography-flexibility table below documents the \emph{target} behaviour; the code applies uniform proximity today.
+
+\paragraph{Geography flexibility by queue / trigger.}
+
+\medskip
+{\small
+\begin{longtable}{lp{3.5cm}p{6cm}}
+\toprule
+\textbf{Job class / trigger} & \textbf{Geography flexibility} & \textbf{Practical meaning} \\
+\midrule
+Normal jobs           & Normal geography only & Use sensible cluster or sensible line/corridor; do not weaken just because capacity is tight. \\
+Requested Scheduling  & Moderate & Can flex beyond normal geography, but route still has to make practical sense. \\
+Priority              & Substantial & May justify substantially weaker geography and even fragile routes. \\
+Accepted Quotes       & Substantial & Long-duration jobs make geography less important; fragile route allowed with anchor-hold. \\
+$2\times$-average Normal (winter override) & Can outrank AQ / RS in winter & Route must still make reasonable sense.  Do not use this override for absurd isolation or nonsense geography.  Trigger source still unresolved. \\
+Scheduling Preferences & Moderate if needed & Hard preference constraints still control eligibility; do not force a fragile/underfilled day just because preference matched. \\
+\bottomrule
+\end{longtable}
+}
 
 \paragraph{Seasonal emphasis.}
 Summer emphasises best/most efficient geography.
@@ -260,12 +296,12 @@ What matters for scheduling is the planned-hours source for each category.
 \textbf{Job Category} & \textbf{Planned-Hours Source} & \textbf{Initial Build Handling} \\
 \midrule
 Boiler Maintenance                & Fixed default time  & 1 hour \\
-Castrads New Radiator(s)          & Required Job Hours  & Use Required Job Hours field \\
+Castrads New Radiator(s)          & Required Job Hours for Scheduling  & Use the Required Job Hours for Scheduling field \\
 Estimate                          & Fixed default time  & 1 hour \\
 Go Back                           & Fixed default time  & 1 hour \\
-Insulation                        & Required Job Hours  & Use Required Job Hours field \\
+Insulation                        & Required Job Hours for Scheduling  & Use the Required Job Hours for Scheduling field \\
 New Boiler Visit                  & Fixed default time  & 1 hour \\
-New Equipment Install (non-boiler) & Required Job Hours & Use Required Job Hours field \\
+New Equipment Installation Other Than Boiler & Required Job Hours for Scheduling & Use the Required Job Hours for Scheduling field \\
 Radiator Pick-Up                  & Fixed default time  & 1 hour \\
 Radiator Refinishing              & Airtable radiator-hours table & Read active Airtable values \\
 Radiator Replace \& Refinish     & Airtable radiator-hours table & Read active Airtable values \\
@@ -273,9 +309,9 @@ Radiator Replacement              & Airtable radiator-hours table & Read active 
 Radiator Service                  & Fixed default time  & 1 hour \\
 Service Call                      & Fixed default time  & 1 hour \\
 Steam System Inspection           & Fixed default time  & 1 hour \\
-Trap Service                      & Required Job Hours  & Use Required Job Hours field \\
-Vent / Trap / Repair / Piping     & Required Job Hours  & Use Required Job Hours field \\
-Accepted Quotes / consult-style   & Required Job Hours if present; else fallback & Fallback: total amount $\div$ 350, rounded up to next half hour \\
+Trap Service                      & Required Job Hours for Scheduling  & Use the Required Job Hours for Scheduling field \\
+Vent / Trap / Repair / Piping Work & Required Job Hours for Scheduling  & Use the Required Job Hours for Scheduling field \\
+Accepted Quotes / consult-style quoted work & Required Job Hours for Scheduling if present; otherwise formula fallback & Fallback: total\_job\_amount $\div$ 350, rounded up to next half hour \\
 \bottomrule
 \end{longtable}
 }
@@ -283,7 +319,12 @@ Accepted Quotes / consult-style   & Required Job Hours if present; else fallback
 The radiator-hours formula lives in Airtable, not in hard-coded Python logic.
 The engine must consult the Airtable radiator-hours table for active step values when estimating radiator job hours.
 
-Vehicle eligibility, technician eligibility, and similar assignment restrictions are supplied through Airtable-managed lookup/rules inputs and weekly context data, not hard-coded in the category-time table.
+\paragraph{Missing-hours fallback.}
+When a job belongs to a ``Required Job Hours for Scheduling'' category but the field is empty or zero, the engine falls back to 1.0~hour and surfaces a \textbf{Pre-Route Communication} warning (severity~=~Warning, type~=~``Missing Planned Hours'') identifying the job and category.
+This ensures Ryan is aware of any data-quality gaps before approving the schedule.
+
+Vehicle eligibility, technician eligibility, and similar assignment restrictions are not defined by the category-time table (addendum~\S3).
+They are supplied through Airtable-managed lookup/rules inputs and weekly context data rather than hard-coded in the category-time section.
 
 % ===================================================================
 \section*{Input Data}
@@ -291,6 +332,28 @@ Vehicle eligibility, technician eligibility, and similar assignment restrictions
 
 The engine assumes the candidate pool has already been pre-filtered upstream to only eligible Work Order jobs.
 Jobs already scheduled, cancelled, already in Airtable workflow, or manually handled as Urgent are excluded before the engine runs.
+
+\subsection*{Data Buckets Overview}
+
+The seven semantic data buckets (four inputs, three outputs) are summarised below.
+Exact Airtable naming can be finalised at implementation lock; what matters is the semantic contract.
+
+\medskip
+{\small
+\begin{longtable}{lp{5cm}p{5cm}}
+\toprule
+\textbf{Bucket} & \textbf{What it means} & \textbf{Minimum required content} \\
+\midrule
+Candidate Jobs & Weekly pool of eligible jobs after upstream exclusions. & Job Number; dates/age; address fields; area; category; queue; hours; radiator/refinisher; aging flags; rebook counts; scheduling preference; total job amount (AQ). One record per job. \\
+Weekly Context & Week-level settings for the run. & Week Of; Season; Include V-4 This Week; holiday list; linked Weekly Exceptions. One record per week. \\
+Weekly Exceptions & Week-specific capacity reductions. & Technician-day blocks; vehicle unavailability; pre-booked capacity (if represented). Authoritative source of within-week availability reduction. \\
+Lookup / Rules Data & Reference tables and Airtable-managed rule inputs. & Technician/vehicle/area lookups; adjacency/grouping rules; restriction flags; aging/fairness flags; route-eligibility tables. Not a live job list. \\
+Schedule Week Outputs & Owner-review outputs from Weekly Run. & Proposed week; route grouping; route flags; pre-route maps; transcription calendar; Pre-Route Communications. \\
+Pre-Route Communications & Record-based AI outputs before ServiceM8 transcription. & Issue type; severity; message; schedule-week link; optional job/route context. One row per issue. \\
+Route Communications & Record-based AI outputs after sync in route/day/technician interface. & Issue type; severity; message; schedule-week link; required route-day and route-slot context; optional job link. One row per issue. \\
+\bottomrule
+\end{longtable}
+}
 
 \subsection*{Candidate Jobs (Input Payload~1)}
 
@@ -326,13 +389,23 @@ Total Job Amount         & Number & Optional & Used for Accepted Quotes fallback
 
 \subsection*{Weekly Context (Input Payload~2)}
 
-One record per schedule week:
+One record per schedule week.
 
-\begin{itemize}
-    \item Week Of (Monday date), Season (Winter / Summer), Include V-4 This Week (boolean).
-    \item Holiday list (if a holiday affects the week).
-    \item Linked Weekly Exceptions.
-\end{itemize}
+\medskip
+{\small
+\begin{longtable}{lclp{4.5cm}}
+\toprule
+\textbf{Field} & \textbf{Type} & \textbf{Req?} & \textbf{Notes} \\
+\midrule
+Week Of            & Date     & Required  & Monday date for the target scheduling week \\
+Season             & Text     & Required  & ``Winter'' or ``Summer''; controls seasonal decision-ladder logic \\
+Include V-4 This Week & Boolean & Required & Turns the overflow route slot on or off \\
+Holiday List       & Long text / linked & Optional & Only if a holiday affects the week \\
+Weekly Exceptions  & Linked records & Required & Authoritative source of within-week availability reduction \\
+Helpers Available  & Number   & Optional  & Implementation extension (default 2); helper-day capacity toggle \\
+\bottomrule
+\end{longtable}
+}
 
 \subsection*{Weekly Exceptions (Input Payload~3)}
 
@@ -386,7 +459,9 @@ These tables cover technician / vehicle / area lookup data; area naming, adjacen
 \label{sec:duplicates}
 
 Duplicate policing primarily happens upstream in Airtable before Python scheduling begins.
+Python is \textbf{not} expected to be the main duplicate-detection system for Initial Build.
 If a suspected duplicate still slips through and materially affects route construction, Python surfaces it through Pre-Route or Route Communications.
+Where duplicate review is still needed in Python fallback scenarios, the flag should be minimal: \textbf{Job~\# and what needs fixing}.
 
 \paragraph{Radiator replacement slave job exception.}
 Multiple radiator replacement slave jobs at 15 Monticello, Providence must \textbf{never} be treated as duplicates.
@@ -437,7 +512,7 @@ Every stage is a deterministic function of its inputs; there is no randomness an
     \item \textbf{Select Standby Jobs} -- Choose the two lowest-priority acceptable candidates per route as standby.
     \item \textbf{Compute Area Readiness} -- Derive area communication layer (\texttt{Good}\,/\,\texttt{Moderate}\,/\,\texttt{Lean}).  Ownership note: if Airtable can calculate it, Airtable should.
     \item \textbf{Generate Communications} -- Emit Pre-Route Communications for week-build issues.
-    \item \textbf{Render Outputs} -- Route maps, flags, transcription calendar, exclusion report, reason codes.
+    \item \textbf{Render Outputs} -- Route maps, flags, transcription calendar, reason codes.  Exclusion reasons are surfaced as Pre-Route Communications (spec~\S14.2).
 \end{enumerate}
 
 % ===================================================================
@@ -507,9 +582,9 @@ If every rule passes, the assignment is feasible.  If any rule fails, the engine
 For each job (in ranked order), the engine considers all eligible (technician, vehicle, day) slots and picks the \textbf{best fit} using a preference ranking:
 
 \begin{enumerate}
-    \item \textbf{Best route shape.} Prefer the slot that produces the best overall route shape (cluster tightness or corridor flow), not just the shortest distance.
-    \item \textbf{Lightest day.} Among comparable route shapes, prefer the day with the least service time already assigned.
-    \item \textbf{Geography flexibility.} Apply the queue-specific flexibility level (see Section~\ref{sec:queues}): Normal jobs get normal geography only; Priority and Accepted Quotes allow substantial weakening; Requested Scheduling allows moderate weakening.
+    \item \textbf{Closest depot (proximity proxy for route shape).} Prefer the slot whose technician depot is nearest to the job.  This serves as a proxy for route-shape quality until the full \texttt{ROUTE\_SHAPE\_OK} rule is implemented; see Deferred Items.
+    \item \textbf{Lightest day.} Among comparable proximity, prefer the day with the fewest stops already assigned.
+    \item \textbf{Geography flexibility.} Apply the queue-specific flexibility level (see Section~\ref{sec:geography}): Normal jobs and Scheduling Preferences get normal geography only; Priority and Accepted Quotes allow substantial weakening; Requested Scheduling allows moderate weakening.  \emph{Note:} the current code applies uniform proximity for all queues; per-queue flexibility differentiation is a planned enhancement.
 \end{enumerate}
 
 If no eligible slot exists, the job is recorded with the first failing rule as the reason code.
@@ -566,7 +641,7 @@ No jobs are moved or swapped at this stage---the flags exist so Ryan can decide 
 \begin{itemize}
     \item \textbf{Explainable:} every assignment can be traced to ``job $j$ scored $X$; slot $(t,k,d)$ was chosen because it was the closest eligible depot on the lightest day.''
     \item \textbf{Deterministic:} same inputs always produce the same plan.
-    \item \textbf{Adjustable:} the scoring weights and the slot-preference ranking are config parameters, not hard-coded logic.
+    \item \textbf{Adjustable:} the tier order and tiebreaker ratios (winter: $0.6\,\text{age}+0.4\,\text{geo}$; summer: $0.7\,\text{geo}+0.3\,\text{age}$) are designed to be configurable.  Initial Build hardcodes defaults that match the spec ranking; config-file injection is a planned enhancement.
     \item \textbf{No solver dependency:} pure Python, no Pyomo, no CBC, no external libraries beyond standard data-processing.
     \item \textbf{Upgrade path:} if the greedy approach leaves too much value on the table, Phase~1 can be replaced with an optimisation model (MILP or constraint programming) in Version~2 without changing the rest of the pipeline.
 \end{itemize}
@@ -577,7 +652,7 @@ No jobs are moved or swapped at this stage---the flags exist so Ryan can decide 
 % ===================================================================
 
 After Phase~1 assigns jobs to (technician, vehicle, day) bundles, Phase~2 arranges the stops within each day into a drivable geographic sequence.
-Version~1 uses a simple, explainable heuristic--no VRP solver.
+Initial Build uses a simple, explainable heuristic---no VRP solver.
 
 \subsection*{Step 1 -- Build the Day's Stop List}
 
@@ -603,7 +678,8 @@ The depot (technician start location) is node~0.
 \end{algorithmic}
 \end{algorithm}
 
-Distances are computed via Haversine (straight-line), which is sufficient for sequencing.
+Initial Build computes inter-stop distances via Haversine (straight-line), which is sufficient for stop \emph{sequencing}.
+Note: the spec (\S3) requires drive-time calculations from a real routing service (e.g.\ Google Maps) for \emph{travel-time budgeting}; the Haversine here is the sequencing heuristic only.
 Road-network distances can be substituted without changing the algorithm.
 
 \subsection*{Step 3 -- Feasibility Verification}
@@ -630,8 +706,8 @@ If any job is dropped, the engine re-runs the nearest-neighbour on the reduced s
 \begin{itemize}
     \item \textbf{Transparent:} the route order is ``go to the closest un-visited stop.''  No parameter tuning, no black-box behaviour.
     \item \textbf{Fast:} $O(n^2)$ for $n$ stops.  For typical NES clusters ($n \leq 14$), this is instantaneous.
-    \item \textbf{Good enough:} nearest-neighbour typically delivers routes within 20--25\,\% of the optimal tour length.  For Version~1 the priority is correctness and reviewability, not distance optimality.
-    \item \textbf{Upgrade path:} if route quality matters (fuel costs, tight schedules), a 2-opt improvement pass or a proper TSP/VRP solver can be added in Version~2 as a drop-in replacement.
+    \item \textbf{Good enough:} nearest-neighbour typically delivers routes within 20--25\,\% of the optimal tour length.  For Initial Build the priority is correctness and reviewability, not distance optimality.
+    \item \textbf{Upgrade path:} if route quality matters (fuel costs, tight schedules), a 2-opt improvement pass or a proper TSP/VRP solver can be added in a future version as a drop-in replacement.
 \end{itemize}
 
 % ===================================================================
@@ -639,23 +715,39 @@ If any job is dropped, the engine re-runs the nearest-neighbour on the reduced s
 % ===================================================================
 
 The following rules are enforced throughout the pipeline.  None may be relaxed; every violation either blocks the assignment or triggers a job exclusion with a reason code.
+The engine evaluates \textbf{12 named eligibility rules} for every candidate (job, technician, vehicle, day) slot:
 
+\medskip
+{\small
+\begin{longtable}{lp{9cm}}
+\toprule
+\textbf{Rule Name} & \textbf{Description} \\
+\midrule
+\texttt{TECH\_AVAILABLE}    & Technician must be available on the planned day (after weekly exceptions). \\
+\texttt{VEH\_AVAILABLE}     & Vehicle must be available on the planned day (after weekly exceptions). \\
+\texttt{SKILL\_MATCH}       & Technician skills must cover the job's requirements. \\
+\texttt{VEH\_CAPABILITY}    & Vehicle capability tags must cover the job's requirements. \\
+\texttt{VEH\_WORK\_ELIGIBLE}& V-4 may carry \emph{only} Steam System Inspections, Service Calls, and Boiler Maintenance. Main vehicles have no category restriction. \\
+\texttt{WITHIN\_RADIUS}     & Haversine distance from technician depot to job must not exceed $R$ (cluster radius, default 30\,km). \\
+\texttt{NOT\_PROHIBITED}    & (technician, job) pair must not be in the prohibited-pairs set. \\
+\texttt{CAPACITY\_OK}       & Physical vehicle capacity $Q_k$ must not be exceeded for the (vehicle, day) slot. \\
+\texttt{BOOKED\_CAP}        & Seasonal booking target must not be exceeded (winter: 4, summer: 3, from Weekly Context). \\
+\texttt{TIME\_OK}           & Daily service-time budget $T_{\max} \times \text{phase1\_fraction}$ must not be exceeded. \\
+\texttt{ONE\_VEH\_PER\_TECH}& Each technician uses at most one vehicle per day. \\
+\texttt{ONE\_TECH\_PER\_VEH}& Each vehicle is assigned to at most one technician per day. \\
+\bottomrule
+\end{longtable}
+}
+
+\noindent Additional structural constraints (enforced by the pipeline but not as per-slot eligibility checks):
 \begin{itemize}
-    \item Job must be in the valid weekly candidate pool (pre-filtered upstream to eligible Work Order jobs).
-    \item Technician must be available on the planned day (after weekly exceptions): \texttt{TECH\_AVAILABLE}.
-    \item Vehicle must be available and work-type-eligible for the route: \texttt{VEH\_AVAILABLE}, \texttt{VEH\_WORK\_ELIGIBLE}.
-    \item Technician skills must cover job requirements: \texttt{SKILL\_MATCH}.
-    \item Job must fit the route's geographic shape (cluster, corridor, or Providence-assisted): \texttt{ROUTE\_SHAPE\_OK}.
-    \item Route-capacity target must not be exceeded for the current season: \texttt{CAPACITY\_OK}.
-    \item Daily service-time budget $T_{\max}$ must not be exceeded (including travel time from routing service): \texttt{TIME\_OK}.
-    \item First-only / last-only position constraints must be satisfiable: \texttt{POSITION\_OK}.
-    \item Each technician uses at most one vehicle per day: \texttt{ONE\_VEH\_PER\_TECH}.
-    \item Each vehicle is used by at most one technician per day: \texttt{ONE\_TECH\_PER\_VEH}.
     \item Helper-required routes must be flagged; once a helper is on a route, they stay for the whole day.
     \item No job is assigned more than once.
-    \item V-4 cannot carry Accepted Quotes or helper-required / Two-Man routes.
     \item V-2 is used for radiator days only.
+    \item Standby pool is capped at 2~candidates per route.
 \end{itemize}
+
+\noindent \textbf{Deferred:} \texttt{ROUTE\_SHAPE\_OK} (geographic-shape fit) and \texttt{POSITION\_OK} (first-only/last-only) are spec requirements not yet implemented as eligibility rules; they are listed in Deferred Items.
 
 Each constraint maps directly to a named rule in the eligibility-check table (Phase~1, Step~2) or the feasibility-verification table (Phase~2, Step~3).
 
@@ -677,15 +769,15 @@ After special routes consume capacity, the remaining capacity feeds normal sched
 \section*{Solution Approach}
 % ===================================================================
 
-Version~1 uses a single, deterministic algorithm for each phase:
+Initial Build uses a single, deterministic algorithm for each phase:
 
 \begin{itemize}
-    \item \textbf{Phase~1 (Scheduling):} Score--sort--assign greedy loop with 10 named eligibility rules (Section~\ref{sec:scheduling}).
+    \item \textbf{Phase~1 (Scheduling):} Score--sort--assign greedy loop with 12 named eligibility rules (Section~\ref{sec:scheduling}).
     \item \textbf{Phase~2 (Routing):} Nearest--neighbour stop ordering with post-hoc feasibility checks (Section~\ref{sec:routing}).
 \end{itemize}
 
 No external solver, optimisation library, or metaheuristic is required.
-The engine completes a full weekly plan for the current fleet size (30 jobs, 4 technicians, 5 vehicles, 5 days) in under one second on commodity hardware.
+The engine completes a full weekly plan for the current fleet size (26 jobs, 3 technicians, 5 vehicles, 5 days) in under one second on commodity hardware.
 
 If route quality improvements are needed in a future version, a 2-opt improvement pass or a TSP/VRP solver can be introduced as a drop-in replacement for the nearest-neighbour step without changing the rest of the pipeline.
 
@@ -697,14 +789,20 @@ If route quality improvements are needed in a future version, a 2-opt improvemen
 \subsection*{Standby Job Selection}
 
 After route construction, the engine selects two standby jobs per route---the lowest-priority jobs among otherwise acceptable route candidates.
-Standby jobs are output separately from assigned jobs.
+Standby jobs must be distinguished from assigned jobs in the engine's outputs; each assignment carries an explicit \texttt{role} tag (\texttt{assigned}, \texttt{standby}, or \texttt{anchor\_hold}).
 
 If enough valid standby jobs do not exist, the route normally should not run unless work is thin and Ryan is expected to work manual adjustments afterward.
+The engine surfaces this condition through a \texttt{WEAK\_STANDBY} review flag (severity WARN) on any route with fewer than two standby candidates.
 
 \subsection*{Anchor-Hold Logic}
 
-For fragile routes---typically those built around long-duration Accepted Quotes or Priority jobs with weak geography---the engine may designate an \textbf{anchor-hold job}: a high-value job that justifies the route's existence even if the supporting geography is thin.
+For fragile routes---typically those built around long-duration Accepted Quotes, Priority jobs, or Requested Scheduling jobs with weak geography---the engine may designate an \textbf{anchor-hold job}: a high-value job that justifies the route's existence even if the supporting geography is thin.
+Per the queue treatment table (Section~\ref{sec:queues}): Priority \emph{may serve as anchor}; Accepted Quotes may use anchor-hold on fragile routes; Requested Scheduling \emph{may serve as anchor}.
 Anchor-hold should generally \emph{not} be used in Replacement Route (adds too much time), except when jobs are thin and it is the only workable option.
+
+\paragraph{Implementation status.}
+Anchor-hold designation is not yet implemented in code.
+The standby-selection module identifies standby candidates, but the anchor-hold flag (marking a job as the route's justification) is a planned enhancement.
 
 \subsection*{Day-Damage Recovery (Ryan-Initiated)}
 
@@ -713,13 +811,15 @@ These are \emph{not} automatic background behaviours; they are triggered by Ryan
 
 \paragraph{Replacement Job.}
 Launched when a mostly intact route loses one job.
-The engine uses the current route context (current jobs, accepted jobs, accepted booking windows) when searching for a replacement.
+Replacement Job is launched from the post-sync single-route / single-day / single-technician view.
+If easiest to build, Airtable may send the whole route view.
+The engine uses that context---current jobs, accepted jobs, and accepted booking windows---when searching for a replacement.
 
 \begin{itemize}
     \item Return up to two good replacement candidates when they exist, unranked (both may be invited).
     \item If only one good candidate exists, return only that candidate.
     \item If no good candidate exists, return the best available candidate marked as ``outside normal parameters.''
-    \item An on-the-way first-only / last-only candidate is valid only if the already accepted booking windows leave a workable first or last slot.
+    \item An on-the-way first-only / last-only candidate is valid only if the already accepted booking windows leave a workable first or last slot.  If that slot is not available, the candidate must be rejected and the engine should keep searching.
 \end{itemize}
 
 \paragraph{Replacement Route (Blow-Up / Rebuild).}
@@ -727,6 +827,10 @@ Launched when a day must be entirely rebuilt for the same technician/route.
 The rebuilt route includes standby jobs like a normal new route and actively reconsiders the weakened day rather than just swapping one job.
 
 If a rebuilt route is workable but weak, the engine still emits the best workable result and surfaces the warning through Route Communications rather than suppressing the route.
+
+\paragraph{Implementation status.}
+Replacement Job and Replacement Route are defined as callable workflows (Section~\ref{sec:workflows}) but are not yet implemented in code.
+The Weekly Run workflow (score-and-assign pipeline) is fully implemented; the two recovery workflows are planned enhancements that will reuse the same eligibility, scoring, and slot-selection modules.
 
 % ===================================================================
 \section*{Booking-Window and Feasibility Logic}
@@ -737,13 +841,24 @@ The engine is not responsible for full downstream invitation management, but it 
 
 \subsection*{Window Rules}
 
-\begin{itemize}
-    \item Technicians leave the shop at 7:00\,a.m.
-    \item Use a \textbf{7--8} first window if estimated arrival is before 8:00; use an \textbf{8--9} first window if estimated arrival is after 8:00.
-    \item Window pairing: 7--8 implies 8--11 as the second window; 8--9 implies 10--1 as the second window.
-    \item Later windows are fixed in order: 11--2, 1--4, and optional 2--5.
-\end{itemize}
+Technicians depart the shop at 7:00\,a.m.  The \emph{estimated arrival} at the first stop is 7:00 plus the travel time from the shop to that stop's address (computed via the routing service).  This arrival time determines the first window:
 
+\medskip
+{\small
+\begin{tabular}{llp{6cm}}
+\toprule
+\textbf{Slot} & \textbf{Window} & \textbf{Rule / pairing} \\
+\midrule
+First stop (early)  & 7--8   & Used when estimated arrival is before 8:00.  Implies \textbf{8--11} as the second window. \\
+First stop (late)   & 8--9   & Used when estimated arrival is 8:00 or later.  Implies \textbf{10--1} as the second window. \\
+Third stop          & 11--2  & Fixed sequence after first two windows. \\
+Fourth stop         & 1--4   & Fixed sequence. \\
+Optional fifth stop & 2--5   & Used only when a fifth booked job is added. \\
+\bottomrule
+\end{tabular}
+}
+
+\medskip
 The engine must output first-only and last-only flags when route shape requires them.
 
 \subsection*{Feasibility / Conflict Flagging}
@@ -755,6 +870,19 @@ Initial Build supports practical feasibility flagging:
     \item Identify when a route probably cannot be served with the currently accepted windows.
 \end{itemize}
 The engine should \emph{not} become a full invitation-window planner.
+
+\subsection*{Related Sub-Topics}
+
+The consolidated spec (\S8) groups two additional sub-topics under booking-window logic:
+\begin{itemize}
+    \item \textbf{Radiator-hour source and radiator-route rules} (\S8.1) -- covered in Section~\ref{sec:categories} (Job-Category Planned Hours) and the radiator-hours notes in Deferred Items.
+    \item \textbf{Duplicate-job handling} (\S8.2) -- covered in Section~\ref{sec:duplicates} (Duplicate--Address Handling).
+\end{itemize}
+
+\paragraph{Implementation status.}
+Booking-window assignment and feasibility flagging are not yet implemented in code.
+The current pipeline enforces time-budget constraints (\texttt{TIME\_OK}) but does not assign specific window slots (7--8, 8--9, etc.) or detect window conflicts.
+This is a planned enhancement; the data model, communication records, and acceptance criteria are defined above.
 
 % ===================================================================
 \section*{Area Readiness}
@@ -780,65 +908,109 @@ The engine does not need to own Area Readiness calculation in Initial Build unle
 % ===================================================================
 
 Initial Build uses a minimal, record-based communication model (one Airtable row per issue) rather than open chat.
+This makes issues easier to scan, filter, resolve, and tie back to one route or one job when needed (addendum~\S4).
 Ryan-to-AI actions remain button-based only: Run AI Analysis, Approve, Reject\,/\,Re-run, Replacement Job, and Replacement Route.
 
 \subsection*{Pre-Route Communications}
 
-Used \emph{before} ServiceM8 transcription for week-build issues.
+Used \emph{before} ServiceM8 transcription for week-build issues such as skipped jobs needing fixes, weak-route notes, duplicate review, clarification requests, or any other items the engine needs to tell Ryan before transcription (spec~\S10, addendum~\S4.1).
 Each record contains:
 
 \medskip
 {\small
-\begin{longtable}{lclp{4cm}}
+\begin{longtable}{lclp{2.8cm}p{3.2cm}}
 \toprule
-\textbf{Field} & \textbf{Type} & \textbf{Req?} & \textbf{Notes} \\
+\textbf{Field} & \textbf{Type} & \textbf{Req?} & \textbf{Example} & \textbf{Notes} \\
 \midrule
-Communication ID   & Text      & Required & Unique row identifier \\
-Communication Type & Select    & Required & E.g.\ Skipped Job, Weak Route, Duplicate Review \\
-Severity           & Select    & Required & Info / Warning / Action Needed \\
-Schedule Week      & Linked    & Required & Parent review record \\
-Message            & Long text & Required & Human-readable message \\
-Resolved           & Checkbox  & Required & Whether the issue has been cleared \\
-Ryan Note          & Long text & Optional & Owner-side note \\
-Created By Run     & Text      & Optional & Run identifier for traceability \\
-Job Number         & Text      & Optional & Tied to one job \\
-Route Day          & Text      & Optional & Tied to a candidate route-day \\
-Route Slot         & Text      & Optional & Tied to a candidate route slot \\
-What Needs Fixing  & Long text & Optional & Plain-language fix request \\
-AI Suggested Action & Long text & Optional & Action guidance \\
+Communication ID   & Text / autonumber & Required & COM-00127 & Unique row identifier \\
+Communication Type & Single select    & Required & Skipped Job & Examples differ slightly by table \\
+Severity           & Single select    & Required & Warning & Info / Warning / Action Needed \\
+Schedule Week      & Linked record    & Required & Week of 2026-04-06 & Parent review record \\
+Message            & Long text & Required & Job 10452 skipped: missing geocode.\ Fix address and rerun. & Human-readable message Ryan can scan quickly \\
+Resolved           & Checkbox  & Required & FALSE & Indicates whether the issue has been cleared \\
+Ryan Note          & Long text & Optional & Will correct address after lunch. & Optional owner-side note \\
+Created By Run     & Text      & Optional & run\_2026\_04\_06\_01 & Useful for traceability \\
+Job Number         & Text / linked job & Optional & SM8-10452 & Use when the issue is tied to one job \\
+Route Day          & Text      & Optional & Tuesday & Use when the issue is tied to a candidate route-day \\
+Route Slot         & Text      & Optional & Van~4 & Use when the issue is tied to a candidate route slot \\
+What Needs Fixing  & Long text & Optional & Address missing geocodeable street number. & Plain-language fix request \\
+AI Suggested Action & Long text & Optional & Correct address and rerun the week. & Optional action guidance \\
 \bottomrule
 \end{longtable}
 }
 
 \subsection*{Route Communications}
 
-Used in the post-sync route/day/technician interface for route-specific issues.
+Used in the post-sync route/day/technician interface for route-specific issues such as replacement results, booking-window-sensitive notes, or weak-but-workable route warnings (addendum~\S4.2).
 Route Day and Route Slot are \textbf{required} in the post-sync context.
 
 \medskip
 {\small
-\begin{longtable}{lclp{4cm}}
+\begin{longtable}{lclp{2.8cm}p{3.2cm}}
 \toprule
-\textbf{Field} & \textbf{Type} & \textbf{Req?} & \textbf{Notes} \\
+\textbf{Field} & \textbf{Type} & \textbf{Req?} & \textbf{Example} & \textbf{Notes} \\
 \midrule
-Communication ID   & Text      & Required & Unique row identifier \\
-Communication Type & Select    & Required & E.g.\ Replacement Result, Window Note \\
-Severity           & Select    & Required & Info / Warning / Action Needed \\
-Schedule Week      & Linked    & Required & Parent review record \\
-Message            & Long text & Required & Human-readable message \\
-Route Day          & Text      & Required & Route context (post-sync) \\
-Route Slot         & Text      & Required & Technician or Van~4 row \\
-Resolved           & Checkbox  & Required & Whether the issue has been cleared \\
-Ryan Note          & Long text & Optional & Owner-side note \\
-Created By Run     & Text      & Optional & Run identifier for traceability \\
-Job Number         & Text      & Optional & Tied to one job \\
-Affected Window    & Text      & Optional & E.g.\ ``7--8 first slot'' \\
-Outside Normal Parameters & Checkbox & Optional & Flags weak-but-workable outcomes \\
+Communication ID   & Text / autonumber & Required & COM-00127 & Unique row identifier \\
+Communication Type & Single select    & Required & Replacement Result & Examples differ slightly by table \\
+Severity           & Single select    & Required & Warning & Info / Warning / Action Needed \\
+Schedule Week      & Linked record    & Required & Week of 2026-04-06 & Parent review record \\
+Message            & Long text & Required & Job 10631 replaced: best available but geography is weak. & Human-readable message Ryan can scan quickly \\
+Resolved           & Checkbox  & Required & FALSE & Indicates whether the issue has been cleared \\
+Ryan Note          & Long text & Optional & Will correct address after lunch. & Optional owner-side note \\
+Created By Run     & Text      & Optional & run\_2026\_04\_06\_01 & Useful for traceability \\
+Route Day          & Text      & Required & Thursday & Route context is required in the post-sync interface \\
+Route Slot         & Text      & Required & Chris & Technician or Van~4 row for the affected route \\
+Job Number         & Text / linked job & Optional & SM8-10631 & Use when the issue ties to one job \\
+Affected Window    & Text      & Optional & 7-8 first slot & Use when the note involves booking-window feasibility \\
+Outside Normal Parameters & Checkbox & Optional & TRUE & Flags weak-but-workable outcomes \\
 \bottomrule
 \end{longtable}
 }
 
 Both communication tables are implemented as one row per issue, not aggregated summary blobs.
+
+\subsection*{Internal Event to Communication Mapping}
+
+The pipeline converts internal \texttt{Exclusion} and \texttt{ReviewFlag} objects into Communication records using the mapping below.
+The \texttt{generate\_pre\_route\_comms} and \texttt{generate\_route\_comms} functions in \texttt{nes\_dispatch/postprocess/communications.py} implement this mapping.
+
+\medskip
+{\small
+\begin{longtable}{lllp{4.5cm}}
+\toprule
+\textbf{Internal Code} & \textbf{Target Table} & \textbf{Comm.\ Type} & \textbf{Severity} \\
+\midrule
+\multicolumn{4}{l}{\emph{Exclusion reason codes (one Pre-Route record per excluded job):}} \\
+\texttt{QUEUE\_URGENT}       & Pre-Route & Queue Exclusion      & Info \\
+\texttt{QUEUE\_ON\_HOLD}     & Pre-Route & Queue Exclusion      & Info \\
+\texttt{MISSING\_GEOCODE}    & Pre-Route & Skipped Job          & Action Needed \\
+\texttt{INVALID\_CATEGORY}   & Pre-Route & Skipped Job          & Action Needed \\
+\texttt{NO\_ELIGIBLE\_TRIPLE}& Pre-Route & Capacity Shortfall   & Warning \\
+\texttt{SKILL\_MISMATCH}     & Pre-Route & Capacity Shortfall   & Warning \\
+\texttt{VEHICLE\_MISMATCH}   & Pre-Route & Capacity Shortfall   & Warning \\
+\texttt{V4\_CATEGORY\_BLOCKED}& Pre-Route & Vehicle Restriction & Warning \\
+\texttt{BOOKED\_CAP\_FULL}   & Pre-Route & Capacity Shortfall   & Warning \\
+\texttt{PROHIBITED\_PAIR}    & Pre-Route & Scheduling Conflict  & Warning \\
+\texttt{CLUSTER\_RADIUS}     & Pre-Route & Geography Issue      & Warning \\
+\texttt{ROUTE\_DROP}         & Pre-Route & Route Drop           & Warning \\
+\midrule
+\multicolumn{4}{l}{\emph{Review-flag codes (week-level $\to$ Pre-Route; route-level $\to$ Route):}} \\
+\texttt{ROUTE\_DROP}         & Route     & Route Drop           & Warning \\
+\texttt{DUP\_ADDR}           & Pre-Route\textsuperscript{*} & Duplicate Review     & Warning \\
+\texttt{GEOCODE\_OOB}        & Pre-Route & Skipped Job          & Warning \\
+\texttt{WEAK\_STANDBY}       & Pre-Route & Weak Route           & Warning \\
+\texttt{MISSING\_PLANNED\_HOURS} & Pre-Route & Missing Planned Hours & Warning \\
+\texttt{TECH\_OVERLOAD}      & Pre-Route & Capacity Shortfall   & Warning \\
+\texttt{VEH\_BOTTLENECK}     & Pre-Route & Capacity Shortfall   & Warning \\
+\texttt{HELPER\_REQUIRED}    & Route     & Helper Note          & Info \\
+\texttt{CROSS\_AREA}         & Route     & Geography Issue      & Warning \\
+\texttt{NO\_FEASIBLE}        & Route     & Weak Route           & Warning \\
+\bottomrule
+\end{longtable}
+}
+
+\noindent\textsuperscript{*}\texttt{DUP\_ADDR} is routed to Pre-Route by default.
+Per spec~\S8.1, if a suspected duplicate ``materially affects route construction,'' it may also surface as a Route Communication tied to the affected route/day.
 
 % ===================================================================
 \section*{Callable Workflows}
@@ -889,6 +1061,11 @@ Van 4        & 40118 & & 40127 & & 40135 \\
 
 This grid may be stored as Airtable fields, a rendered attachment, or another Airtable-friendly artefact, so long as it preserves the weekday/date column structure and route-row layout.
 
+\paragraph{Post-approval transcription result.}
+The spec contract (\S2) requires the engine to define what Python delivers after Ryan approves.
+Once the Schedule Week is approved, the same transcription-calendar data and route groupings become the \textbf{post-approval transcription result}---the final artefact Ryan uses for manual ServiceM8 entry.
+Python does not own post-approval calendar population (that is Amy\,/\,Airtable's responsibility per \S10); Python's obligation is to produce the data in a form that Airtable can hand off to Ryan's downstream workflow.
+
 % ===================================================================
 \section*{Approve / Reject / Re-run Workflow}
 \label{sec:approve}
@@ -916,25 +1093,49 @@ The five pre-route maps should be delivered on the Schedule Week record in the f
 \label{sec:ownership}
 % ===================================================================
 
-This section prevents scope confusion.
+This section exists to prevent scope confusion (spec \S10).
+Some functions belong to the Python engine (``Freelancer''), some belong to Airtable\,/\,Amy, some are shared-interface items, and some still have an unresolved owner.
+The freelancer should not assume missing ownership means missing importance.
 
 \medskip
 {\small
 \begin{longtable}{p{4.5cm}p{4.5cm}p{4.5cm}}
 \toprule
-\textbf{Python Engine Owns} & \textbf{Amy / Airtable Owns} & \textbf{Shared Interface} \\
+\textbf{Python Engine (Freelancer) Owns} & \textbf{Amy / Airtable Owns} & \textbf{Shared Interface} \\
 \midrule
 Weekly engine logic; route selection; geography logic; aging/fairness application; holiday modifiers; helper-required flags; route maps; draft schedule outputs; replacement/day-recovery recommendation logic. &
-Airtable display/storage; dashboard/workflow UX; queue/status automations; Postmark/email setup; ServiceM8 note-writing and message generation; communications surfaces in Airtable; radiator-hours table; operational interface layer around the engine. &
-Run AI Analysis trigger; data handoff into and out of the engine; Schedule Week review outputs; Pre-Route and Route Communications; replacement/rebuild triggers/buttons; post-approval handoff. \\
+Airtable display/storage; dashboard/workflow UX; queue/status automations; Postmark/email setup; ServiceM8 note-writing and message generation; Ryan-facing exception entry; holiday/company-wide exception support; post-approval calendar population; communications surfaces in Airtable; radiator-hours table; operational interface layer around the engine. &
+Input/export schemas; review handoff; replacement/rebuild triggers/buttons; any Area Readiness storage/display split; Run AI Analysis trigger; data handoff into and out of the engine; Schedule Week review outputs; Pre-Route and Route Communications; post-approval handoff. \\
 \bottomrule
 \end{longtable}
 }
 
+\paragraph{Initial build communication model (\S10.1).}
+Initial build uses a minimal, record-based communication model rather than a broad chat system.
+Brain-to-Ryan communication surfaces through Pre-Route Communications (before transcription) and Route Communications (post-sync route interface).
+Rare Ryan-to-Brain actions happen through \textbf{four standard buttons} tied to the correct context:
+\begin{itemize}
+    \item \textbf{Run AI Analysis} and \textbf{Reject / Re-run} on the Schedule Week record.
+    \item \textbf{Replacement Job} and \textbf{Replacement Route} on the post-sync route view.
+\end{itemize}
+A generic freeform communication button is out of scope for Initial Build unless testing later proves it is needed.
+The Airtable trigger/button design for these actions is Amy-side/shared-interface work, not something the Python engine should silently assume exists.
+
+\paragraph{Shared interface.}
+Shared-interface items are capabilities that depend on both sides even if one side ultimately executes more of the work.
+These include the Run AI Analysis trigger, data handoff into and out of the engine, replacement/rebuild triggers, and any post-approval handoff needed to move approved schedule results into Ryan's downstream workflow.
+
 \paragraph{TBD owner.}
 Some items are required system capabilities without a final owner.
-The most important: the \textbf{exception interaction channel}---a limited back-and-forth for rare cases where AI cannot safely proceed alone (replacement-job approval, accepted-window clarification, first-only/last-only questions).
+The most important: the \textbf{exception interaction channel}---a limited back-and-forth for rare cases where AI cannot safely proceed alone (replacement-job approval, accepted-window clarification, first-only/last-only replacement questions).
 Normal weekly scheduling remains mostly one-directional.
+The exact implementation method is not yet defined---it may be built in Airtable, in an AI wrapper/interface layer, by the freelancer, or as shared work.
+For Initial Build, treat this as a required system capability with implementation owner TBD.
+
+\paragraph{Area Readiness ownership note (\S10.2).}
+Area Readiness remains a gray area and should not be over-specified.
+Current best assumption: if Airtable can calculate it, Airtable should calculate, store, and display it.
+The engine does not need to own Area Readiness calculation in Initial Build unless later directed otherwise.
 
 % ===================================================================
 \section*{Post-Route Update Rule}
@@ -973,14 +1174,14 @@ Figures~\ref{fig:route_wed}--\ref{fig:route_fri} show three route maps generated
 \begin{figure}[htbp]
     \centering
     \includegraphics[width=0.75\textwidth]{figures/route_wed_example.png}
-    \caption{Wednesday route for Technician~T-01 with Vehicle~V-5. The red path follows the road network from the depot (red square) to a distant job stop (green circle), illustrating a longer-distance service call through rural New Hampshire.}
+    \caption{Wednesday route for Technician~T-01 with Vehicle~V-1. The red path follows the road network from the depot (red square) to a distant job stop (green circle), illustrating a longer-distance service call through rural New Hampshire.}
     \label{fig:route_wed}
 \end{figure}
 
 \begin{figure}[htbp]
     \centering
     \includegraphics[width=0.75\textwidth]{figures/route_thu_example.png}
-    \caption{Thursday route for Technician~T-01 with Vehicle~V-6. The route runs from the depot through a suburban area to a job stop in the southern section, showing the road-following path along major corridors.}
+    \caption{Thursday route for Technician~T-01 with Vehicle~V-3. The route runs from the depot through a suburban area to a job stop in the southern section, showing the road-following path along major corridors.}
     \label{fig:route_thu}
 \end{figure}
 
@@ -1000,13 +1201,44 @@ Each weekly run produces:
     \item \textbf{Transcription calendar} -- 5-column weekday grid $\times$ 4 route rows with job numbers only (Section~\ref{sec:transcription}).
     \item \textbf{Route grouping output} -- assigned jobs, standby jobs, and anchor-hold jobs shown distinctly.
     \item \textbf{Route flags} -- helper required = yes/no; first-only / last-only notes; odd-route explanation layer.
-    \item \textbf{Day/route maps} -- job pins labelled with Job~\#, job category, and planned hours; vehicle colour coding; route notes.  Five maps (one per day) delivered on the Schedule Week record before transcription.
-    \item \textbf{Pre-Route Communications} -- one record per week-build issue (Section~\ref{sec:comms}).
+    \item \textbf{Route notes} -- explain why a strange-looking route still makes sense (e.g.\ ``Priority job SM8-10677 justified geography weakening; route remains workable via Providence corridor'').  Route notes are a spec~\S1 in-scope deliverable, distinct from route flags.
+    \item \textbf{Day/route maps} -- job pins labelled with Job~\#, job category, and planned hours; vehicle colour coding; route notes overlaid.  Five maps (one per day) delivered on the Schedule Week record before transcription.
+    \item \textbf{Pre-Route Communications} -- one record per week-build issue, surfaced before ServiceM8 transcription (Section~\ref{sec:comms}).
+    \item \textbf{Route Communications} -- one record per route-specific issue, surfaced in the post-sync route/day/technician interface (Section~\ref{sec:comms}).
     \item \textbf{Area report / readiness} -- communication-support reporting (optional / pending Amy).
-    \item \textbf{Reason codes} -- traceable to the rules that produced each decision.
+    \item \textbf{Reason codes} -- traceable to the rules that produced each decision.  Exclusion reasons for unassigned jobs are delivered as Pre-Route Communication records (spec~\S14.2), not a separate report.
 \end{itemize}
 
 Outputs are designed for human review by Ryan; the engine does \emph{not} auto-book jobs.
+
+\subsection*{Proposed Filename Conventions}
+
+The spec proposes the following file artefacts (exact names may change at implementation lock):
+
+\medskip
+{\small
+\begin{longtable}{llp{5.5cm}l}
+\toprule
+\textbf{Artefact} & \textbf{Type} & \textbf{Purpose} & \textbf{Status} \\
+\midrule
+\multicolumn{4}{l}{\textbf{Inputs (4 payloads + lookup tables)}} \\
+\texttt{jobs\_input.csv}              & Input  & Candidate Jobs --- weekly exported eligible-job dataset. & Locked \\
+\texttt{weekly\_context.csv}          & Input  & Weekly Context --- week-of, season, include-V-4, helpers, holidays. & Locked \\
+\texttt{weekly\_exceptions.csv}       & Input  & Weekly Exceptions --- technician-day blocks, vehicle unavailability. & Locked \\
+\texttt{area\_rules.csv}              & Input  & Lookup / Rules --- area naming, adjacency, grouping rules. & Locked \\
+\texttt{technicians.csv}              & Input  & Lookup / Rules --- technician roster (ID, name, depot). & Locked \\
+\texttt{vehicles.csv}                 & Input  & Lookup / Rules --- vehicle roster (ID, capability tags, capacity). & Locked \\
+\midrule
+\multicolumn{4}{l}{\textbf{Outputs (Schedule Week artefacts)}} \\
+\texttt{transcription\_calendar.\{ext\}} & Output & Transcription-calendar grid (5$\times$4, job numbers only). The primary deliverable. & Required \\
+\texttt{route\_grouping.json}         & Output & Route groupings with assigned, standby, and anchor-hold lists. & Required \\
+\texttt{pre\_route\_comms.json}       & Output & Pre-Route Communication records (one per week-build issue). & Required \\
+\texttt{route\_comms.json}            & Output & Route Communication records (one per route-specific issue). & Required \\
+\texttt{maps/}                        & Output & Day/route review maps with labelled job pins and route notes. 5 maps. & Required \\
+\texttt{area\_report.csv}             & Output & Area-level readiness report (optional / pending Amy). & Provisional \\
+\bottomrule
+\end{longtable}
+}
 
 % ===================================================================
 \section*{Owner--Controlled Policy Inputs}
@@ -1026,9 +1258,10 @@ Reducing $Q_k$ for a specific vehicle reserves slack for ad-hoc stops or equipme
 $R$ defines how far from a technician's home depot jobs may be included; $r$ limits the maximum gap between consecutive stops.
 Tightening these values produces geographically compact routes with shorter drive legs; relaxing them allows the engine to reach more jobs at the expense of longer routes.
 
-\paragraph{Seasonal weight profile $(w_g, w_f, w_a, w_r)$.}
-Four weights that shift the job-scoring formula between a geography-dominant mode (Mar--Sep) and a fairness-dominant mode (Oct--Feb).
-The owner sets two seasonal profiles; the engine selects the active profile based on the planning-week date.
+\paragraph{Seasonal decision-ladder configuration.}
+The engine selects the active tier order and tiebreaker weights based on the season supplied in Weekly Context (Winter or Summer).
+Within each tier, winter emphasises job age (older jobs preferred) while summer emphasises geography (route quality preferred).
+Tier boundaries and tiebreaker ratios are configurable so NES can tune behaviour after testing.
 
 \paragraph{Weekly exceptions.}
 Technician and vehicle unavailability entries (PTO, maintenance, pre-booked installs) entered each week.
@@ -1105,7 +1338,7 @@ nes_dispatch/
         validators.py       # Pre-run sanity checks (coordinates, missing fields)
     rules/
         scoring.py          # Composite priority-score formula
-        eligibility.py      # 10 named eligibility rules -> pass/fail per slot
+        eligibility.py      # 12 named eligibility rules -> pass/fail per slot
         slot_selection.py   # Best-fit ranking (closest depot, lightest day, cheapest vehicle)
         helpers.py          # Helper-assignment secondary pass
         workload.py         # Workload-review flags (no job movement)
@@ -1138,9 +1371,9 @@ Each stage logs its runtime and emits a structured summary (JSON) so that failur
 Unit tests cover individual stages with small synthetic fixtures.
 An integration test runs the full pipeline on the example CSVs and asserts that:
 \begin{itemize}
-    \item every assigned job satisfies all 10 eligibility rules;
+    \item every assigned job satisfies all 12 eligibility rules;
     \item no technician exceeds $T_{\max}$;
-    \item helper jobs have exactly one primary and one distinct helper;
+    \item every helper-needed job has \texttt{helper\_required=True} on its assignment;
     \item output files are generated without errors.
 \end{itemize}
 
@@ -1168,7 +1401,7 @@ $T_{\max}$ (daily time budget)                &           & $\bullet$ &         
 $P$ (global max stops)                        &           & $\bullet$ &           \\
 $R$ (cluster radius)                          &           & $\bullet$ &           \\
 $r$ (inter-stop radius)                       &           & $\bullet$ &           \\
-Seasonal weight profiles $(w_g,w_f,w_a,w_r)$  &           & $\bullet$ &           \\
+Seasonal tier/tiebreaker config    &           & $\bullet$ &           \\
 Workload-review thresholds                    &           & $\bullet$ &           \\
 \midrule
 Vehicle roster \& capability tags             &           &           & $\bullet$ \\
@@ -1177,9 +1410,8 @@ Vehicle speed / cost / capacity overrides     &           &           & $\bullet
 Technician roster \& skills                   &           &           & $\bullet$ \\
 Technician home-depot coordinates             &           &           & $\bullet$ \\
 Weekly exceptions (PTO, maintenance)          &           &           & $\bullet$ \\
-Prohibited technician--job pairings           &           &           & $\bullet$ \\
 Geographic area definitions ($\mathcal{A}$)   &           &           & $\bullet$ \\
-Special-route flags (radiator, NH, helper)    &           &           & $\bullet$ \\
+Radiator-hours table (Airtable formula)       &           &           & $\bullet$ \\
 Job candidate pool (from ServiceM8 sync)      &           &           & $\bullet$ \\
 \bottomrule
 \end{longtable}
@@ -1232,12 +1464,12 @@ After Phase~1 and Phase~2 each complete, the engine runs an assertion suite on t
 \paragraph{Phase~1 assertions.}
 \begin{itemize}
     \item Every assigned job appears at most once across all (technician, vehicle, day) triples.
-    \item All 10 eligibility rules pass for every assignment.
+    \item All 12 eligibility rules pass for every assignment.
     \item Vehicle capacity is satisfied per slot: assigned jobs $\leq Q_k$.
     \item Service-time budget holds: total service time $\leq T_{\max}$ per slot.
     \item Each technician uses at most one vehicle per day.
     \item Each vehicle is used by at most one technician per day.
-    \item Every helper job that is assigned has exactly one helper technician, different from the primary.
+    \item Every helper-needed job has \texttt{helper\_required=True} on its assignment and route.
 \end{itemize}
 
 \paragraph{Phase~2 assertions (per route).}
@@ -1256,12 +1488,12 @@ If any assertion fails, the pipeline logs the violation, marks the affected rout
 \paragraph{Unit tests.}
 Each module exposes pure functions that can be tested in isolation:
 \begin{itemize}
-    \item \texttt{test\_scoring}: synthetic 5-job scenario; verify composite scores match hand-computed values.
-    \item \texttt{test\_eligibility}: 3-job, 2-tech, 2-vehicle scenario; verify each of the 10 named rules returns the expected pass/fail.
+    \item \texttt{test\_scoring}: synthetic 5-job scenario; verify decision-ladder tier scores and seasonal tiebreakers match hand-computed values.
+    \item \texttt{test\_eligibility}: 3-job, 2-tech, 2-vehicle scenario; verify each of the 12 named rules returns the expected pass/fail.
     \item \texttt{test\_slot\_selection}: given pre-computed eligibility, verify best-fit ranking (closest depot $\to$ lightest day $\to$ cheapest vehicle).
     \item \texttt{test\_nearest\_neighbour}: 5-node instance with known optimal NN tour; compare output sequence.
     \item \texttt{test\_feasibility}: route deliberately exceeding $T_{\max}$; verify job-drop and re-sequence logic.
-    \item \texttt{test\_helper}: 2-tech, 1 helper job; confirm that exactly one helper is assigned and differs from the primary.
+    \item \texttt{test\_helper}: helper-needed job assigned to route; confirm \texttt{helper\_required=True} flag is set on the assignment and route.
 \end{itemize}
 
 \paragraph{Integration test.}
@@ -1300,19 +1532,20 @@ Each flag has a severity (\texttt{INFO}, \texttt{WARN}, \texttt{CRITICAL}), a sh
 \texttt{WEAK\_STANDBY} & WARN    & Fewer than 2 feasible standby jobs exist for a route. If a scheduled job drops, coverage is thin. \\
 \texttt{VEH\_BOTTLENECK} & WARN  & A vehicle is assigned at 100\,\% capacity on 4+ days. Little room for ad-hoc or emergency jobs. \\
 \texttt{TECH\_OVERLOAD} & WARN   & A technician's total weekly service time exceeds 90\,\% of their available hours. \\
-\texttt{HELPER\_TRAVEL} & WARN   & The helper technician's home depot is more than $R$ metres from the primary technician's depot. Travel time may be underestimated. \\
+\texttt{HELPER\_REQUIRED} & INFO   & Route contains one or more helper-required jobs.  The entire route/day is flagged as helper-required. \\
 \texttt{ROUTE\_DROP}  & WARN     & One or more Phase-1-scheduled jobs were dropped during Phase~2 routing because travel time pushed the route past $T_{\max}$. \\
 \texttt{GEOCODE\_OOB} & CRITICAL & A job's coordinates fall outside the New England bounding box. Likely a geocoding error; the job is excluded and must be corrected. \\
 \texttt{NO\_FEASIBLE} & CRITICAL & A (technician, vehicle, day) bundle produced by Phase~1 has no feasible route at all in Phase~2. The entire bundle is unserved. \\
-\texttt{SOLVER\_TIMEOUT} & \multicolumn{2}{p{8.5cm}}{\emph{Removed in Version~1--no solver is used.  Reserved for future Version~2 if a TSP/VRP solver is introduced.}} \\
+\texttt{SOLVER\_TIMEOUT} & \multicolumn{2}{p{8.5cm}}{\emph{Removed in Initial Build---no solver is used.  Reserved for a future version if a TSP/VRP solver is introduced.}} \\
 \bottomrule
 \end{longtable}
 }
 
-\subsection*{Exception / Exclusion Report}
+\subsection*{Exclusion Reason Codes}
 
 For every job in the weekly candidate pool that is \emph{not} assigned to a route, the engine emits a reason code explaining why.
-This report is the primary traceability artefact.
+These codes are delivered as Pre-Route Communication records per spec~\S14.2 (no standalone validation report).
+The reason code set is the primary traceability mechanism.
 
 \medskip
 {\small
@@ -1320,32 +1553,57 @@ This report is the primary traceability artefact.
 \toprule
 \textbf{Reason Code} & \textbf{Explanation} \\
 \midrule
-\texttt{ALREADY\_ASSIGNED}   & Job was assigned in a prior run and has not been reset. \\
-\texttt{STATUS\_EXCLUDED}    & Job status is \texttt{excluded} or \texttt{cancelled} in ServiceM8. \\
-\texttt{NO\_ELIGIBLE\_TRIPLE}& No (technician, vehicle, day) triple satisfies all 10 eligibility rules. \\
-\texttt{CAPACITY\_FULL}      & All eligible slots were already at vehicle capacity $Q_k$. \\
+\texttt{QUEUE\_URGENT}       & Job is in the Urgent queue---handled outside weekly schedule. \\
+\texttt{QUEUE\_ON\_HOLD}     & Job is in the On Hold queue---excluded until re-queued. \\
+\texttt{NO\_ELIGIBLE\_TRIPLE}& No (technician, vehicle, day) triple satisfies all 12 eligibility rules. \\
+\texttt{CAPACITY\_FULL}      & All eligible slots were already at physical vehicle capacity $Q_k$. \\
+\texttt{BOOKED\_CAP\_FULL}   & All eligible slots have already reached the seasonal booking target (winter~4 / summer~3). \\
+\texttt{V4\_CATEGORY\_BLOCKED}& Job category is not in V-4's allowed list (Steam System Inspection, Service Call, Boiler Maintenance) and V-4 was the only available vehicle. \\
 \texttt{TIME\_BUDGET}        & Including this job would exceed the service-time budget $T_{\max}$ in every eligible slot. \\
-\texttt{CLUSTER\_RADIUS}     & Job is outside the cluster radius $R$ from every available technician's depot. \\
 \texttt{SKILL\_MISMATCH}     & No available technician has the required skills. \\
 \texttt{VEHICLE\_MISMATCH}   & No available vehicle has the required capability tags (e.g.\ radiator job but V-2 unavailable). \\
-\texttt{HELPER\_UNAVAIL}     & Job requires a helper ($h_j = 1$) but no second technician is eligible on any feasible day. \\
-\texttt{PROHIBITED\_PAIR}    & All eligible technicians are on the prohibited-pairing list for this job. \\
+\texttt{PROHIBITED\_PAIR}    & Every available technician is in the prohibited-pairs set for this job. \\
+\texttt{CLUSTER\_RADIUS}     & Job is beyond the cluster radius $R$ from every available technician depot. \\
 \texttt{ROUTE\_DROP}         & Job was scheduled by Phase~1 but dropped during Phase~2 routing due to travel-time infeasibility. \\
+\texttt{MISSING\_GEOCODE}    & Job could not be geocoded; skipped with a communication record. \\
+\texttt{INVALID\_CATEGORY}   & Job category not in the 17 recognised categories. \\
 \bottomrule
 \end{longtable}
 }
 
-\subsection*{Output Format}
+\subsection*{Delivery Mechanism}
 
-Flags and exclusion reasons are written to two files per run:
+Per spec~\S14.2: ``No standalone validation report is needed.  Any skipped jobs should be surfaced through the same communication flow using only Job~\# and what needs fixing.''
+Accordingly:
 
 \begin{itemize}
-    \item \texttt{flags\_\{date\}.json} -- array of flag objects, each with \texttt{code}, \texttt{severity}, \texttt{message}, and references to the affected route, technician, or job.
-    \item \texttt{exclusions\_\{date\}.json} -- array of exclusion objects, each with \texttt{job\_id}, \texttt{reason\_code}, and a human-readable \texttt{detail} string.
+    \item \textbf{Exclusion reasons} are delivered as \textbf{Pre-Route Communication} records (one per excluded job), with
+          \texttt{Communication Type} and severity mapped per the internal-event table in Section~\ref{sec:comms},
+          and the \texttt{What Needs Fixing} field populated with the human-readable detail string.
+    \item \textbf{Review flags} are routed to Pre-Route or Route Communications depending on scope:
+          week-level flags (e.g.\ \texttt{DUP\_ADDR}, \texttt{WEAK\_STANDBY}, \texttt{MISSING\_PLANNED\_HOURS}) become Pre-Route Communications;
+          route-specific flags (e.g.\ \texttt{HELPER\_REQUIRED}, \texttt{CROSS\_AREA}) become Route Communications attached to the affected route/day/slot.
+    \item \texttt{CRITICAL}-severity communications (``Action Needed'') are additionally surfaced as bold-red banners at the top of the Schedule Week review, ensuring they are not overlooked.
 \end{itemize}
 
-Both files are included in the review packet sent to the owner alongside route maps and summaries.
-\texttt{CRITICAL} flags are additionally surfaced as bold-red banners at the top of the summary output, ensuring they are not overlooked.
+The engine retains structured \texttt{ReviewFlag} and \texttt{Exclusion} objects internally for programmatic access, but the \emph{primary} output channel for Ryan is the communication records described in Section~\ref{sec:comms}.
+The conversion is implemented by \texttt{generate\_pre\_route\_comms} and \texttt{generate\_route\_comms} in \texttt{nes\_dispatch/postprocess/communications.py}.
+
+% ===================================================================
+\section*{Important Context (Not Direct Engine Logic)}
+\label{sec:context}
+% ===================================================================
+
+The following items are not engine logic but affect interpretation (spec~\S11):
+
+\begin{itemize}
+    \item \textbf{Scheduling Preferences detail source} -- queue is settled, but the exact source of the preference text/details is still pending Amy.
+    \item \textbf{Radiator module} -- the Airtable radiator-hours structure is now defined, but Ryan still needs to set and tune the first real values.
+    \item \textbf{Pre-Route / Route Communications Airtable structure} -- Python-side concepts are defined (Section~\ref{sec:comms}), but the final Airtable build details still need to be implemented.
+    \item \textbf{Revise / Reject tuning} -- a minimal Reject\,/\,Re-run workflow is defined for Initial Build (Section~\ref{sec:approve}), but finer-grained revision behaviour can expand after testing.
+    \item \textbf{Area Readiness final scope} -- optional / pending Amy.
+    \item \textbf{Generic communication button} -- intentionally deferred unless testing shows standard buttons are not enough.
+\end{itemize}
 
 % ===================================================================
 \section*{Deferred / Unresolved Items}
@@ -1359,6 +1617,16 @@ Both files are included in the review packet sent to the owner alongside route m
     \item \textbf{Area Readiness final scope} -- optional / pending Amy.
     \item \textbf{Exception interaction channel} -- required system capability; implementation owner TBD.
     \item \textbf{Hosting / deployment details} -- technical handoff still needed; should remain a compact technical appendix.
+    \item \textbf{\texttt{ROUTE\_SHAPE\_OK} eligibility rule} -- full route-shape analysis (cluster tightness, corridor flow, zigzag detection); currently approximated by depot-to-job haversine distance.
+    \item \textbf{\texttt{POSITION\_OK} eligibility rule} -- first-only / last-only enforcement based on accepted booking windows.
+    \item \textbf{Geography flexibility per queue} -- differentiated geography tolerance (Normal = tight, Priority/AQ = substantial, RS = moderate); currently uniform proximity.
+    \item \textbf{Providence shop as routing factor} -- spec requires Providence shop as an explicit routing node for Providence-assisted route shapes.
+    \item \textbf{Booking-window assignment and feasibility flagging} -- window slot assignment (7--8, 8--9, etc.) and route/window conflict detection.
+    \item \textbf{Anchor-hold designation} -- marking a high-value job as the route's justification on fragile routes.
+    \item \textbf{Replacement Job workflow} -- return up to two unranked replacement candidates using current route context.
+    \item \textbf{Replacement Route workflow} -- rebuild one day for the same technician/route, including standby jobs.
+    \item \textbf{Real routing service integration} -- spec \S3 requires Google Maps or equivalent for travel-time budgeting; current code uses haversine-based time estimates.
+    \item \textbf{Configurable scoring weights} -- tier order and tiebreaker ratios should be injectable via config file; currently hardcoded.
 \end{itemize}
 
 % ===================================================================
@@ -1376,7 +1644,7 @@ Initial Build testing uses the real upcoming live scheduling week, not an elabor
 \end{itemize}
 
 % ===================================================================
-\section*{Future Considerations (Version~2 and Beyond)}
+\section*{Future Considerations (Beyond Initial Build)}
 % ===================================================================
 
 \begin{itemize}

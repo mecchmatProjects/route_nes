@@ -243,6 +243,7 @@ class ScheduleAssignment:
     vehicle_id: str
     day: str
     helper_required: bool = False      # spec §5: yes/no flag only, no named helper
+    role: str = "assigned"              # "assigned" | "standby" | "anchor_hold"
 
 
 @dataclass
@@ -255,6 +256,7 @@ class RouteResult:
     total_distance_m: float
     total_time_min: float
     helper_required: bool = False      # True if any job on route needs a helper
+    standby_job_ids: list[str] = field(default_factory=list)  # spec §7: standby per route
     method: str = "nearest_neighbour"
 
 
@@ -312,5 +314,5 @@ class RouteCommunication:
 @dataclass
 class Exclusion:
     job_id: str
-    reason_code: str             # e.g. "SKILL_MISMATCH", "CLUSTER_RADIUS"
+    reason_code: str             # e.g. "QUEUE_URGENT", "NO_ELIGIBLE_TRIPLE"
     detail: str

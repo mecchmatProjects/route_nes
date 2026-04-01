@@ -21,21 +21,25 @@ from nes_dispatch.pipeline import (
 
 # ── Config ──────────────────────────────────────────────────────────────────
 CONFIG = {
+    # Season — injected from WeeklyContext at runtime; static default here
+    "season": "winter",
+    # Physical vehicle capacity (max stops per vehicle per day)
+    "P_max_stops": 14,
+    # Seasonal booked-job targets (spec §5): winter 4+2 standby, summer 3+2
+    # (overridden below when season is set from WeeklyContext)
+    "max_booked_per_route": 4,  # winter default
+    # Time budget
     "T_max_minutes": 480,
     "T_max_phase1_fraction": 0.80,
-    "P_max_stops": 14,
+    # Geography
     "R_cluster_radius_m": 30000,
     "r_interstop_limit_m": 15000,
-    "seasonal_weights": {
-        "summer": {"w_g": 0.4, "w_f": 0.2, "w_a": 0.3, "w_r": 0.1},
-        "winter": {"w_g": 0.2, "w_f": 0.4, "w_a": 0.3, "w_r": 0.1},
-    },
-    "summer_months": [3, 4, 5, 6, 7, 8, 9],
+    "lat_bounds": [41.0, 48.0],
+    "lon_bounds": [-74.0, -67.0],
+    # Review-flag thresholds
     "tech_overload_pct": 0.90,
     "veh_bottleneck_days": 4,
     "weak_standby_threshold": 2,
-    "lat_bounds": [41.0, 48.0],
-    "lon_bounds": [-74.0, -67.0],
 }
 
 SEP = "=" * 72
@@ -83,6 +87,13 @@ def main() -> None:
     # ── Stage 0: Load ───────────────────────────────────────────────
     header("STAGE 0 — Load & Validate")
     wd = load_weekly_data("data")
+
+    # Inject season from WeeklyContext into CONFIG (spec §5 / §6.1)
+    if wd.context:
+        CONFIG["season"] = wd.context.season
+        CONFIG["max_booked_per_route"] = (
+            4 if wd.context.season.lower() == "winter" else 3
+        )
 
     sub("INPUT: Raw data files")
     print(f"  Jobs loaded:       {len(wd.jobs)}")

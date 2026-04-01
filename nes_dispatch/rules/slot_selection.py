@@ -1,6 +1,6 @@
 """Best-fit slot selection (Technical Sketch §5, Stage 5.3).
 
-Given a job, iterate all (tech, vehicle, day) combinations, apply the 10
+Given a job, iterate all (tech, vehicle, day) combinations, apply
 eligibility rules, and return the best-fit slot ranked by:
     1. closest depot  (lowest haversine distance)
     2. lightest day   (fewest stops already assigned)
@@ -104,8 +104,10 @@ def first_failing_rule(
     _RULE_TO_REASON = {
         "SKILL_MATCH": "SKILL_MISMATCH",
         "VEH_CAPABILITY": "VEHICLE_MISMATCH",
+        "VEH_WORK_ELIGIBLE": "V4_CATEGORY_BLOCKED",
         "WITHIN_RADIUS": "CLUSTER_RADIUS",
         "CAPACITY_OK": "CAPACITY_FULL",
+        "BOOKED_CAP": "BOOKED_CAP_FULL",
         "TIME_OK": "TIME_BUDGET",
         "NOT_PROHIBITED": "PROHIBITED_PAIR",
     }

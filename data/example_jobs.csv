@@ -24,3 +24,4 @@ SM8-50102,90 Bellevue Ave,Newport,RI,09,Newport,Castrads New Radiator(s),Normal 
 SM8-60201,45 Main St,Woonsocket,RI,10,Woonsocket,Service Call,Normal jobs,42.0030,-71.5150,2026-02-25,34,,,,TRUE,0,0,,,Service call - far north
 SM8-60202,33 Social St,Woonsocket,RI,10,Woonsocket,Boiler Maintenance,Normal jobs,42.0010,-71.5120,2026-03-13,18,,,,FALSE,0,1,,,Boiler maintenance - rebooked no notes
 SM8-70301,150 Main St,Pawtucket,RI,11,Pawtucket,Vent / Trap / Repair / Piping Work,Normal jobs,41.8780,-71.3830,2026-03-09,22,1.5,,,FALSE,0,0,,,Vent repair
+SM8-70402,88 Exchange St,Pawtucket,RI,11,Pawtucket,Service Call,Scheduling Preferences,41.8790,-71.3810,2026-03-12,19,,,,FALSE,0,0,AM only,,Service call - prefers morning
