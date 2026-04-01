@@ -34,19 +34,18 @@ nes_dispatch/
 │
 ├── rules/                    # ── Phase 1 ──
 │   ├── scoring.py            # Queue-based decision-ladder ranking (winter / summer)
-│   ├── eligibility.py        # Named eligibility rules (VEH_WORK_ELIGIBLE, ROUTE_SHAPE_OK, etc.)
-│   ├── slot_selection.py     # Best-fit ranking (closest depot, lightest day)
-│   ├── helpers.py            # Helper-required flag per route/day (yes/no, not named)
-│   └── workload.py           # Workload-review flags (no job movement)
+│   ├── eligibility.py        # 12 named eligibility rules → pass/fail per slot
+│   └── slot_selection.py     # Best-fit ranking (closest depot, lightest day)
 │
 ├── routing/                  # ── Phase 2 ──
-│   ├── distance.py           # Google Maps / routing-service travel-time computation
+│   ├── distance.py           # Haversine distance computation (routing-service integration deferred)
 │   └── nearest_neighbour.py  # NN stop ordering + feasibility verification
 │
 ├── postprocess/
 │   ├── standby.py            # Standby job ranking (2 lowest-priority per route)
 │   ├── readiness.py          # Area readiness computation (optional / pending Amy)
-│   └── flags.py              # Review flags + Pre-Route / Route Communication records
+│   ├── flags.py              # Review flags (10 codes, 3 severity levels)
+│   └── communications.py     # Exclusion/flag → Pre-Route / Route Communication records
 │
 ├── mapping.py                # Route map rendering (labelled job pins, vehicle colour coding)
 ├── config.py                 # Loads JSON/YAML config; merges Airtable overrides
@@ -281,9 +280,9 @@ Airtable overrides take precedence when present (see ownership boundaries in spe
   "r_interstop_limit_m": 15000,    // max gap between consecutive stops
 
   // --- Scoring (decision-ladder tier order, per season) ---
-  "winter_tier_order": ["Priority", "2x-average Normal", "Accepted Quotes = Scheduling Preferences", "Normal"],
-  "summer_tier_order": ["Priority", "Accepted Quotes = Scheduling Preferences", "Normal"],
-  "summer_months": [3, 4, 5, 6, 7, 8, 9],
+  // Season is supplied per-week in Weekly Context (owner-selected), not derived from month.
+  "winter_tier_order": ["Priority", "2x-average Normal", "Accepted Quotes = Requested Scheduling", "Normal"],
+  "summer_tier_order": ["Priority", "Accepted Quotes = Requested Scheduling", "Normal"],
 
   // --- Helpers ---
   "helpers_available_default": 2,
@@ -325,8 +324,8 @@ Rules are evaluated in a strict stage sequence. Each stage narrows the feasible 
 
 ```
 for each job j:
-    if j.queue ∈ {"Urgent", "On Hold"}                   → EXCLUDE (QUEUE_EXCLUDED)
-    if j.queue not in known eligible/excluded queues      → EXCLUDE (UNKNOWN_QUEUE)
+    if j.queue == "Urgent"                                → EXCLUDE (QUEUE_URGENT)
+    if j.queue == "On Hold"                               → EXCLUDE (QUEUE_ON_HOLD)
 ```
 
 Note: spec §4 / §13 — "current status is not a required engine input." Queue placement
@@ -372,19 +371,24 @@ For each candidate job j (in decision-ladder order):
 
    Within each tier, configurable weights determine final ordering.
 
-2. **Check eligibility** — for each candidate (t, k, d) slot:
+2. **Check eligibility** — for each candidate (t, k, d) slot, all 12 rules must pass:
 
    | Rule | Condition |
    |---|---|
-   | `VEH_WORK_ELIGIBLE` | vehicle can carry this job category (V-2 radiator-only, V-4 restricted) |
-   | `ROUTE_SHAPE_OK` | job fits route geography (cluster, corridor, Providence-assisted) |
-   | `POSITION_OK` | first-only / last-only constraint respected |
-   | `TECH_AVAILABLE` | d ∈ D_t |
-   | `VEH_AVAILABLE` | d ∈ D_k |
-   | `CAPACITY_OK` | current stops for (k, d) < route target |
-   | `TIME_OK` | current service for (t, d) + τ_j ≤ T_max × buffer |
-   | `ONE_VEH_PER_TECH` | tech t not already using a different vehicle on day d |
-   | `ONE_TECH_PER_VEH` | vehicle k not already assigned to a different tech on day d |
+   | `TECH_AVAILABLE` | technician available on planned day (after weekly exceptions) |
+   | `VEH_AVAILABLE` | vehicle available on planned day (after weekly exceptions) |
+   | `SKILL_MATCH` | technician skills cover job requirements |
+   | `VEH_CAPABILITY` | vehicle capability tags cover job requirements |
+   | `VEH_WORK_ELIGIBLE` | vehicle can carry this job category (V-4 restricted) |
+   | `WITHIN_RADIUS` | haversine distance from depot to job ≤ cluster radius |
+   | `NOT_PROHIBITED` | (technician, job) pair not in prohibited-pairs set |
+   | `CAPACITY_OK` | physical vehicle capacity not exceeded for (vehicle, day) |
+   | `BOOKED_CAP` | seasonal booking target not exceeded (winter 4, summer 3) |
+   | `TIME_OK` | daily service-time budget not exceeded |
+   | `ONE_VEH_PER_TECH` | tech not already using a different vehicle on day d |
+   | `ONE_TECH_PER_VEH` | vehicle not already assigned to a different tech on day d |
+
+   **Deferred rules:** `ROUTE_SHAPE_OK` (geographic-shape fit) and `POSITION_OK` (first-only / last-only) are spec requirements not yet implemented.
 
 3. **Select best-fit slot** (closest depot → lightest day).
 
@@ -566,7 +570,7 @@ def run_weekly_plan(config_path: str, data_dir: str) -> ReviewPackage:
    ┌─────────────────────────────────────┐
    │  4. PHASE 1 — Score & Schedule      │
    │     • queue-based decision ladder   │
-   │     • 9 named eligibility rules     │
+   │     • 12 named eligibility rules    │
    │     • best-fit slot selection       │
    │     • helper-required flag pass     │
    │     • workload review flags         │
@@ -587,8 +591,8 @@ def run_weekly_plan(config_path: str, data_dir: str) -> ReviewPackage:
    │  6. Post-processing                 │
    │     • standby ranking               │
    │     • area readiness                │
-   │     • review flags (9 codes)        │
-   │     • exclusion report (11 codes)   │
+   │     • review flags (10 codes)       │
+   │     • exclusion report (14 codes)   │
    └───────────────┬─────────────────────┘
                    ▼
 ┌─────────────────────────────────────────────────┐
@@ -612,33 +616,33 @@ def run_weekly_plan(config_path: str, data_dir: str) -> ReviewPackage:
 |---|---|---|
 | `DUP_ADDR` | INFO | ≥2 jobs share an address |
 | `CROSS_AREA` | INFO | Route spans multiple areas |
+| `HELPER_REQUIRED` | INFO | Route contains helper-required job(s); entire route/day flagged |
+| `MISSING_PLANNED_HOURS` | WARN | Job uses fallback hours because Required Job Hours was missing |
 | `WEAK_STANDBY` | WARN | <2 standby candidates for a route |
 | `VEH_BOTTLENECK` | WARN | Vehicle at 100% capacity ≥4 days |
 | `TECH_OVERLOAD` | WARN | Tech weekly load >90% available hours |
-| `HELPER_TRAVEL` | WARN | Helper depot >R from primary depot |
 | `ROUTE_DROP` | WARN | Phase-1-scheduled job dropped during Phase 2 routing |
 | `GEOCODE_OOB` | CRITICAL | Coordinates outside NE bounding box |
 | `NO_FEASIBLE` | CRITICAL | Phase 1 bundle has no feasible Phase 2 route |
-
-> `SOLVER_TIMEOUT` is reserved for a future phase if a TSP/VRP solver is introduced. Not used in Initial build.
 
 ## 9. Exclusion Reason Codes (quick reference)
 
 | Code | Meaning |
 |---|---|
-| `QUEUE_EXCLUDED` | Job queue is Urgent or On Hold — excluded from weekly engine |
-| `UNKNOWN_QUEUE` | Job queue not in known eligible/excluded set |
-| `NO_ELIGIBLE_TRIPLE` | No (tech, vehicle, day) passes all 9 eligibility rules |
-| `CAPACITY_FULL` | All eligible slots at vehicle capacity |
-| `TIME_BUDGET` | Adding job exceeds T_max everywhere |
+| `QUEUE_URGENT` | Job is in the Urgent queue — excluded from weekly engine |
+| `QUEUE_ON_HOLD` | Job is in the On Hold queue — excluded until re-queued |
+| `NO_ELIGIBLE_TRIPLE` | No (tech, vehicle, day) passes all 12 eligibility rules |
+| `CAPACITY_FULL` | All eligible slots at physical vehicle capacity |
+| `BOOKED_CAP_FULL` | All eligible slots at seasonal booking target (winter 4 / summer 3) |
+| `V4_CATEGORY_BLOCKED` | Job category not in V-4's allowed list; V-4 was the only available vehicle |
+| `TIME_BUDGET` | Adding job exceeds daily time budget everywhere |
+| `SKILL_MISMATCH` | No available technician has the required skills |
 | `VEHICLE_MISMATCH` | No vehicle has required capabilities for this job category |
-| `ROUTE_SHAPE` | Job does not fit acceptable route geography |
-| `POSITION_CONFLICT` | First-only / last-only constraint cannot be satisfied |
+| `PROHIBITED_PAIR` | Every available technician is in the prohibited-pairs set |
+| `CLUSTER_RADIUS` | Job beyond cluster radius from every available depot |
 | `ROUTE_DROP` | Scheduled by Phase 1, dropped by Phase 2 (travel infeasible) |
 | `MISSING_GEOCODE` | Job could not be geocoded; skipped with communication record |
 | `INVALID_CATEGORY` | Job category not in the 17 spec categories |
-
-Note: `ALREADY_ASSIGNED`, `STATUS_EXCLUDED`, `CLUSTER_RADIUS`, `SKILL_MISMATCH`, `HELPER_UNAVAIL`, and `PROHIBITED_PAIR` from the pre-spec design are superseded. See `rule_classification.md` §5.2 for details.
 
 ## 10. Testable Units
 
@@ -648,7 +652,7 @@ The design should make these units independently testable:
 - exclusion filtering (queue-based)
 - duplicate-address grouping
 - queue-based decision-ladder ranking
-- 9 named eligibility rules (individual and combined)
+- 12 named eligibility rules (individual and combined)
 - best-fit slot selection
 - helper-required flag logic
 - nearest-neighbour sequencing

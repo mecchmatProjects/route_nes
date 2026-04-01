@@ -19,36 +19,41 @@ A violated hard constraint means the assignment or route is **infeasible** — t
 | H-02 | **Technician available on day** after weekly exceptions | `TECH_AVAILABLE` | Blocked; contributes to `NO_ELIGIBLE_TRIPLE` |
 | H-03 | **Vehicle available on day** after weekly exceptions | `VEH_AVAILABLE` | Blocked; contributes to `NO_ELIGIBLE_TRIPLE` |
 | H-04 | **Vehicle work-type eligible** — V-2 radiator-only, V-4 restricted to inspections/service calls/boiler maintenance | `VEH_WORK_ELIGIBLE` | Blocked; reason `VEHICLE_MISMATCH` |
-| H-05 | **Route shape acceptable** — cluster, corridor, or Providence-assisted | `ROUTE_SHAPE_OK` | Blocked; reason `ROUTE_SHAPE` |
-| H-06 | **Position constraint respected** — first-only / last-only | `POSITION_OK` | Blocked; reason `POSITION_CONFLICT` |
-| H-07 | **Route capacity per day** — stops ≤ route target (winter 4+2, summer 3+2) | `CAPACITY_OK` | Excess job excluded; reason `CAPACITY_FULL` |
+| H-05 | *(Deferred)* **Route shape acceptable** — cluster, corridor, or Providence-assisted | `ROUTE_SHAPE_OK` | Blocked; reason `ROUTE_SHAPE` |
+| H-06 | *(Deferred)* **Position constraint respected** — first-only / last-only | `POSITION_OK` | Blocked; reason `POSITION_CONFLICT` |
+| H-07 | **Physical vehicle capacity** — stops ≤ vehicle max | `CAPACITY_OK` | Excess job excluded; reason `CAPACITY_FULL` |
+| H-07b | **Seasonal booking target** — winter 4, summer 3 booked jobs per route | `BOOKED_CAP` | Excess job excluded; reason `BOOKED_CAP_FULL` |
 | H-08 | **Service-time budget** — total per day ≤ T_max × buffer | `TIME_OK` | Excess job excluded; reason `TIME_BUDGET` |
 | H-09 | **One vehicle per technician per day** | `ONE_VEH_PER_TECH` | Vehicle re-assignment prevented |
 | H-10 | **One technician per vehicle per day** | `ONE_TECH_PER_VEH` | Tech re-assignment prevented |
 | H-11 | **V-4 excluded from Accepted Quotes and Two-Man routes** | `VEH_WORK_ELIGIBLE` | V-4 slot rejected |
+| H-12 | **Skill match** — technician skills cover job requirements | `SKILL_MATCH` | Blocked; reason `SKILL_MISMATCH` |
+| H-13 | **Within radius** — depot-to-job distance within cluster radius | `WITHIN_RADIUS` | Blocked; reason `CLUSTER_RADIUS` |
+| H-14 | **Not prohibited** — (tech, job) pair not in prohibited set | `NOT_PROHIBITED` | Blocked; reason `PROHIBITED_PAIR` |
+| H-15 | **Vehicle capability** — vehicle capability tags cover job | `VEH_CAPABILITY` | Blocked; reason `VEHICLE_MISMATCH` |
 
-Note: the spec removes `SKILL_MATCH`, `WITHIN_RADIUS`, `NOT_PROHIBITED`, and `HELPER_UNAVAIL` from the Initial build eligibility set. Skills are not modelled per-technician (3 main techs are functionally equivalent). Helper is a yes/no flag per route, not a named assignment. Prohibited pairings are deferred.
+**Deferred rules:** `ROUTE_SHAPE_OK` (geographic-shape fit) and `POSITION_OK` (first-only / last-only) are spec requirements not yet implemented as eligibility rules.
 
 ### 1.2 Phase 2 — Routing (nearest-neighbour feasibility checks)
 
 | ID | Rule | Implementation | Violated → |
 |---|---|---|---|
-| H-13 | **Depart from and return to depot** | NN algorithm structure | Route structurally invalid |
-| H-14 | **No stop visited more than once** | NN algorithm structure | Duplicate visit prevented |
-| H-15 | **Total travel + service time ≤ T_max** | Feasibility verification | Last-added job dropped; reason `ROUTE_DROP` |
-| H-16 | **Stops ≤ Q_k** (vehicle capacity) | Feasibility verification | Excess stop dropped |
-| H-17 | **Every stop within radius R of depot** | Enforced by Phase 1 geography (`ROUTE_SHAPE_OK`) | Should not occur; flag `GEOCODE_OOB` if violated |
+| H-16 | **Depart from and return to depot** | NN algorithm structure | Route structurally invalid |
+| H-17 | **No stop visited more than once** | NN algorithm structure | Duplicate visit prevented |
+| H-18 | **Total travel + service time ≤ T_max** | Feasibility verification | Last-added job dropped; reason `ROUTE_DROP` |
+| H-19 | **Stops ≤ Q_k** (vehicle capacity) | Feasibility verification | Excess stop dropped |
+| H-20 | **Every stop within radius R of depot** | Enforced by Phase 1 geography (`WITHIN_RADIUS`) | Should not occur; flag `GEOCODE_OOB` if violated |
 
 ### 1.3 Pre-solve (input validation)
 
 | ID | Rule | Implementation | Violated → |
 |---|---|---|---|
-| H-18 | **Schema completeness** — all required fields present per spec field dictionaries | `validators.py` check 1 | Job skipped; surfaced through Pre-Route Communications |
-| H-19 | **Coordinate bounds** — lat ∈ [41, 48], lon ∈ [−74, −67] | `validators.py` check 2 | Job excluded; flag `GEOCODE_OOB` |
-| H-20 | **Referential integrity** — exception tech_or_slot matches existing tech; area_number exists | `validators.py` check 3 | Warning; run continues |
-| H-21 | **Availability feasibility** — at least one (tech, vehicle, day) triple remains after exceptions | `validators.py` check 4 | Run aborted (empty schedule) |
-| H-22 | **Duplicate ID detection** — no duplicate job_id or tech_id | `validators.py` check 5 | Run aborted |
-| H-23 | **Job category validation** — job_category ∈ ALL_CATEGORIES (17 spec categories) | `validators.py` check 6 | Job skipped with communication record |
+| H-21 | **Schema completeness** — all required fields present per spec field dictionaries | `validators.py` check 1 | Job skipped; surfaced through Pre-Route Communications |
+| H-22 | **Coordinate bounds** — lat ∈ [41, 48], lon ∈ [−74, −67] | `validators.py` check 2 | Job excluded; flag `GEOCODE_OOB` |
+| H-23 | **Referential integrity** — exception tech_or_slot matches existing tech; area_number exists | `validators.py` check 3 | Warning; run continues |
+| H-24 | **Availability feasibility** — at least one (tech, vehicle, day) triple remains after exceptions | `validators.py` check 4 | Run aborted (empty schedule) |
+| H-25 | **Duplicate ID detection** — no duplicate job_id or tech_id | `validators.py` check 5 | Run aborted |
+| H-26 | **Job category validation** — job_category ∈ ALL_CATEGORIES (17 spec categories) | `validators.py` check 6 | Job skipped with communication record |
 
 Note: spec §14.2 — "No standalone validation report is needed. The run should proceed, and any skipped jobs should be surfaced through the same communication flow using only Job # and what needs fixing."
 
@@ -61,27 +66,32 @@ They determine which (job, technician, vehicle, day) combinations the engine is 
 
 | ID | Filter | Pipeline stage | What it produces |
 |---|---|---|---|
-| E-01 | **Queue-based exclusion** — remove Urgent and On Hold jobs | Stage 2: Exclude | Excluded jobs with reason `QUEUE_EXCLUDED` |
+| E-01 | **Queue-based exclusion** — remove Urgent and On Hold jobs | Stage 2: Exclude | Excluded jobs with reason `QUEUE_URGENT` or `QUEUE_ON_HOLD` |
 | E-02 | **Weekly exception application** — subtract unavailable tech-days (full-day blocks only in Initial build) | Stage 3: Apply Exceptions | Effective availability sets D_t |
 | E-03 | **Vehicle work-type matching** — V-2 radiator-only, V-4 restricted categories | Eligibility check | Slot rejected; reason `VEHICLE_MISMATCH` |
-| E-04 | **Route-shape evaluation** — cluster, corridor, Providence-assisted | Eligibility check | Slot rejected; reason `ROUTE_SHAPE` |
-| E-05 | **Position constraint** — first-only / last-only job placement | Eligibility check | Slot rejected; reason `POSITION_CONFLICT` |
+| E-04 | *(Deferred)* **Route-shape evaluation** — cluster, corridor, Providence-assisted | Eligibility check | Slot rejected; reason `ROUTE_SHAPE` |
+| E-05 | *(Deferred)* **Position constraint** — first-only / last-only job placement | Eligibility check | Slot rejected; reason `POSITION_CONFLICT` |
 | E-06 | **Duplicate-address grouping** — group co-located jobs for route-shape evaluation | Stage 1 post-processing | Grouped set; Pre-Route Communication emitted if suspected duplicate |
 | E-07 | **Special-route extraction** — pull radiator / NH overnight / helper jobs before normal fill | Stage 4: Reserve Special Routes | Reserved capacity consumed first |
 
 ### Eligibility checklist summary
 
-A slot (j, t, k, d) is eligible only when **all rules pass**:
+A slot (j, t, k, d) is eligible only when **all 12 rules pass**:
 
-1. `TECH_AVAILABLE` — d ∈ D_t (tech available after exceptions)
-2. `VEH_AVAILABLE` — d ∈ D_k (vehicle available)
-3. `VEH_WORK_ELIGIBLE` — vehicle can carry this job category
-4. `ROUTE_SHAPE_OK` — job fits the route geography
-5. `POSITION_OK` — first-only / last-only constraint respected
-6. `CAPACITY_OK` — current stops for (k, d) < route target
-7. `TIME_OK` — current service for (t, d) + τ_j ≤ T_max × buffer
-8. `ONE_VEH_PER_TECH` — tech t not using a different vehicle on day d
-9. `ONE_TECH_PER_VEH` — vehicle k not assigned to a different tech on day d
+1. `TECH_AVAILABLE` — technician available on planned day (after exceptions)
+2. `VEH_AVAILABLE` — vehicle available on planned day (after exceptions)
+3. `SKILL_MATCH` — technician skills cover job requirements
+4. `VEH_CAPABILITY` — vehicle capability tags cover job requirements
+5. `VEH_WORK_ELIGIBLE` — vehicle can carry this job category (V-4 restricted)
+6. `WITHIN_RADIUS` — haversine distance from depot to job ≤ cluster radius
+7. `NOT_PROHIBITED` — (technician, job) pair not in prohibited-pairs set
+8. `CAPACITY_OK` — physical vehicle capacity not exceeded for (vehicle, day)
+9. `BOOKED_CAP` — seasonal booking target not exceeded (winter 4, summer 3)
+10. `TIME_OK` — daily service-time budget not exceeded
+11. `ONE_VEH_PER_TECH` — technician not already using a different vehicle on day d
+12. `ONE_TECH_PER_VEH` — vehicle not already assigned to a different technician on day d
+
+**Deferred:** `ROUTE_SHAPE_OK` (geographic-shape fit) and `POSITION_OK` (first-only / last-only) are spec requirements not yet implemented.
 
 Helper model: If any job on a route requires a helper, the entire route/day is marked `helper_required = yes`. The engine does not assign helpers by name (spec §5).
 
@@ -153,10 +163,6 @@ The table specifies where each input lives and what it controls.
 | Radiator-hours formula | Airtable radiator-hours table | Active step values for radiator job time estimates |
 | Holiday list | Weekly Context → Holiday List | Affects the week's schedule |
 | 2×-average-wait flag | Candidate Jobs → 2x Average Wait Flag | Airtable-managed aging signal |
-| Weekly exceptions (PTO, training) | Weekly Exceptions table | Shrinks effective capacity seen by Phase 1 (full-day blocks in Initial build) |
-| Area rules / adjacency | Lookup / Rules table | Area naming, grouping, and adjacency rules |
-| Vehicle restrictions | Lookup / Rules table | V-4 eligible categories, V-2 radiator-only |
-| Radiator-hours formula | Airtable radiator-hours table | Active step values for radiator job time estimates |
 | Candidate Jobs export | Jobs (ServiceM8 → Airtable sync) | The weekly input set (17 fields per spec Table 3) |
 
 ### 4.3 Override precedence
@@ -178,15 +184,14 @@ Each flag has a severity level and a short, scannable code.
 |---|---|---|---|
 | `DUP_ADDR` | INFO | Two or more jobs share the same address | Possible duplicate jobs; review before approving |
 | `CROSS_AREA` | INFO | A route mixes jobs from ≥ 2 areas | May be optimal geographically — glance to confirm |
+| `HELPER_REQUIRED` | INFO | Route contains helper-required job(s); entire route/day flagged | Confirm helper availability |
+| `MISSING_PLANNED_HOURS` | WARN | Job uses fallback hours because Required Job Hours was missing | Verify correct planned hours |
 | `WEAK_STANDBY` | WARN | Fewer than 2 feasible standby jobs for a route | If a scheduled job drops, coverage is thin |
 | `VEH_BOTTLENECK` | WARN | A vehicle is at 100% capacity on 4+ days | Little room for ad-hoc or emergency jobs |
 | `TECH_OVERLOAD` | WARN | Technician's weekly service time > 90% of available hours | Overtime risk |
-| `HELPER_TRAVEL` | WARN | Helper's home depot > R from primary tech's depot | Travel time for helper may be underestimated |
 | `ROUTE_DROP` | WARN | Phase-1-scheduled job dropped during Phase 2 routing | Phase 1 / Phase 2 feasibility gap; consider lowering T_max buffer |
 | `GEOCODE_OOB` | CRITICAL | Job coordinates outside New England bounding box | Geocoding error — job excluded, must be corrected in ServiceM8 |
 | `NO_FEASIBLE` | CRITICAL | A (tech, vehicle, day) bundle has no feasible route at all | Entire bundle unserved; check exceptions or capacity |
-
-> `SOLVER_TIMEOUT` is reserved for a future phase if a solver is introduced. Not used in Initial build.
 
 ### 5.2 Exclusion reason codes
 
@@ -194,19 +199,22 @@ For every job in the weekly pool that is **not** assigned, the engine emits exac
 
 | Reason code | Explanation |
 |---|---|
-| `QUEUE_EXCLUDED` | Job queue is Urgent or On Hold — excluded from weekly engine |
-| `UNKNOWN_QUEUE` | Job queue not in known eligible/excluded set |
-| `NO_ELIGIBLE_TRIPLE` | No (tech, vehicle, day) triple passes all eligibility rules |
-| `CAPACITY_FULL` | All eligible slots already at route-capacity target |
+| `QUEUE_URGENT` | Job is in the Urgent queue — excluded from weekly engine |
+| `QUEUE_ON_HOLD` | Job is in the On Hold queue — excluded until re-queued |
+| `NO_ELIGIBLE_TRIPLE` | No (tech, vehicle, day) triple passes all 12 eligibility rules |
+| `CAPACITY_FULL` | All eligible slots already at physical vehicle capacity |
+| `BOOKED_CAP_FULL` | All eligible slots at seasonal booking target (winter 4 / summer 3) |
+| `V4_CATEGORY_BLOCKED` | Job category not in V-4's allowed list; V-4 was the only available vehicle |
 | `TIME_BUDGET` | Including this job would exceed T_max in every eligible slot |
+| `SKILL_MISMATCH` | No available technician has the required skills |
 | `VEHICLE_MISMATCH` | No available vehicle can carry this job category |
-| `ROUTE_SHAPE` | Job does not fit acceptable route geography |
-| `POSITION_CONFLICT` | First-only / last-only constraint cannot be satisfied |
+| `PROHIBITED_PAIR` | Every available technician is in the prohibited-pairs set |
+| `CLUSTER_RADIUS` | Job beyond cluster radius from every available depot |
 | `ROUTE_DROP` | Job was scheduled by Phase 1 but dropped during Phase 2 routing (travel-time infeasibility) |
 | `MISSING_GEOCODE` | Job could not be geocoded; skipped with communication record |
 | `INVALID_CATEGORY` | Job category not in the 17 spec categories |
 
-Note: `SKILL_MISMATCH`, `CLUSTER_RADIUS`, `PROHIBITED_PAIR`, `HELPER_UNAVAIL`, `STATUS_EXCLUDED`, and `ALREADY_ASSIGNED` from the pre-spec design are superseded. Skills are not modelled per-tech. Prohibited pairings are deferred. Helper is a route-level flag. Status is derived from queue. Upstream pre-filtering handles already-assigned jobs.
+Note: `ALREADY_ASSIGNED`, `STATUS_EXCLUDED`, `UNKNOWN_QUEUE`, `ROUTE_SHAPE`, `POSITION_CONFLICT`, and `HELPER_UNAVAIL` from the pre-spec design are superseded by the codes above.
 
 ### 5.3 Output format
 

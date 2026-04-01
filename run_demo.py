@@ -34,6 +34,11 @@ CONFIG = {
     # Geography
     "R_cluster_radius_m": 30000,
     "r_interstop_limit_m": 15000,
+    "seasonal_weights": {
+        "summer": {"w_g": 0.4, "w_f": 0.2, "w_a": 0.3, "w_r": 0.1},
+        "winter": {"w_g": 0.2, "w_f": 0.4, "w_a": 0.3, "w_r": 0.1},
+    },
+    "summer_months": [3, 4, 5, 6, 7, 8, 9],
     "lat_bounds": [41.0, 48.0],
     "lon_bounds": [-74.0, -67.0],
     # Review-flag thresholds
@@ -97,6 +102,9 @@ def main() -> None:
 
     sub("INPUT: Raw data files")
     print(f"  Jobs loaded:       {len(wd.jobs)}")
+    if wd.load_exclusions:
+        print(f"  Skipped at load:   {len(wd.load_exclusions)}")
+        all_exclusions.extend(wd.load_exclusions)
     print(f"  Technicians:       {len(wd.technicians)}")
     print(f"  Vehicles:          {len(wd.vehicles)}")
     print(f"  Exceptions:        {len(wd.exceptions)}")

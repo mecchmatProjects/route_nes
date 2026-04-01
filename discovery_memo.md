@@ -23,7 +23,7 @@ Recommended layers:
 4. Decision-ladder ranking
    Winter: Priority → 2×-average Normal → AQ/RS → Normal. Summer: Priority → AQ/RS → Normal. Aging active in winter only.
 5. Eligibility filtering
-   VEH_WORK_ELIGIBLE, ROUTE_SHAPE_OK, POSITION_OK, TECH_AVAILABLE, VEH_AVAILABLE, CAPACITY_OK, TIME_OK, ONE_VEH_PER_TECH, ONE_TECH_PER_VEH.
+   12 named rules: TECH_AVAILABLE, VEH_AVAILABLE, SKILL_MATCH, VEH_CAPABILITY, VEH_WORK_ELIGIBLE, WITHIN_RADIUS, NOT_PROHIBITED, CAPACITY_OK, BOOKED_CAP, TIME_OK, ONE_VEH_PER_TECH, ONE_TECH_PER_VEH. Deferred: ROUTE_SHAPE_OK, POSITION_OK.
 6. Route shaping
    Build geography-aware route/day proposals. Route targets: winter 4 booked + 2 standby, summer 3 booked + 2 standby. V-4 overflow toggle.
 7. Helper flagging
@@ -86,14 +86,19 @@ Hard constraints (eligibility checks) govern whether something is allowed at all
 
 Hard constraints (eligibility checks) include:
 
-- VEH_WORK_ELIGIBLE — vehicle type can handle the job category
-- ROUTE_SHAPE_OK — job fits the geographic shape of the route
-- POSITION_OK — no scheduling conflicts (booking-window, duplicate day)
 - TECH_AVAILABLE — technician not blocked by Weekly Exception
 - VEH_AVAILABLE — vehicle not blocked for the day
-- CAPACITY_OK — route not at capacity (winter 4, summer 3 booked slots)
+- SKILL_MATCH — technician skills cover job requirements
+- VEH_CAPABILITY — vehicle capability tags cover job requirements
+- VEH_WORK_ELIGIBLE — vehicle type can handle the job category
+- WITHIN_RADIUS — haversine distance from depot to job ≤ cluster radius
+- NOT_PROHIBITED — (technician, job) pair not in prohibited-pairs set
+- CAPACITY_OK — physical vehicle capacity not exceeded
+- BOOKED_CAP — seasonal booking target not exceeded (winter 4, summer 3)
 - TIME_OK — total service + travel fits within T_max
 - ONE_VEH_PER_TECH / ONE_TECH_PER_VEH — pairing uniqueness per day
+
+Deferred: ROUTE_SHAPE_OK (geographic-shape fit) and POSITION_OK (first-only / last-only).
 
 Queue-based decision-ladder ranking (replaces weighted scoring):
 
@@ -112,8 +117,8 @@ Queue priority determines which jobs rise within feasible geographic clusters. T
 
 Seasonal variation selects the decision-ladder variant:
 
-- Summer (roughly March–September): Priority → AQ/RS → Normal. Geography dominates.
-- Winter (roughly October–February): Priority → 2×-average Normal → AQ/RS → Normal. Aging pressure elevates long-waiting jobs.
+- Summer: Priority → AQ/RS → Normal. Geography dominates.
+- Winter: Priority → 2×-average Normal → AQ/RS → Normal. Aging pressure elevates long-waiting jobs.
 
 The `season` value is supplied per-week in the Weekly Context payload; Ryan selects it.
 
@@ -128,7 +133,7 @@ Recommended Initial build behavior:
 - exclude Urgent / On Hold jobs by queue
 - apply Weekly Exceptions (full tech-day blocks)
 - rank by seasonal decision ladder, not composite scores
-- check eligibility via named rules (VEH_WORK_ELIGIBLE, ROUTE_SHAPE_OK, etc.)
+- check eligibility via 12 named rules (TECH_AVAILABLE, VEH_AVAILABLE, SKILL_MATCH, etc.)
 - shape routes with geography + vehicle constraints
 - flag helper-required routes (yes/no, no named assignment)
 - generate 2 standby jobs per route, identify anchor-holds

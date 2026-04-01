@@ -229,6 +229,7 @@ def build_route(
         dropped_job_ids=dropped_ids,
         total_distance_m=dist,
         total_time_min=time_min,
+        helper_required=any(j.helper_needed for j in visited),
     )
 
     return route, dropped_ids, flags

@@ -103,8 +103,9 @@ The Python engine must be independently understandable and testable. It should c
 ### 5.4 Seasonal Fairness
 
 - The engine shall apply seasonal weighting to fairness and aging pressure.
-- In March through September, geography shall dominate more strongly.
-- In October through February, fairness and aging shall receive more weight while still respecting geographic sanity.
+- Season (winter or summer) is owner-selected per-week in the Weekly Context payload, not derived from calendar months.
+- In summer, geography shall dominate more strongly.
+- In winter, fairness and aging shall receive more weight while still respecting geographic sanity.
 
 ### 5.5 Human Review Model
 
@@ -112,7 +113,7 @@ The Python engine must be independently understandable and testable. It should c
 - The engine shall not auto-write into the ServiceM8 calendar.
 - The engine shall not directly book customers or send invitations.
 - Ryan-to-AI actions use standard buttons: Run AI Analysis, Approve, Reject / Re-run, Replacement Job, Replacement Route.
-- Acceptance standard: most live weeks should be approved by Ryan with no changes (spec §14.4).
+- Acceptance standard: the goal of the project is that AI does the scheduling work, not Ryan. Most live weeks should be approved by Ryan with no changes (spec §14.4).
 
 ### 5.6 Special Route Types
 
@@ -233,6 +234,7 @@ Initial build should not:
 - Ryan may start as early as Monday; freelancer may revise up to Thursday.
 - If output is not usable by Thursday, Ryan reverts to manual for that week.
 - Most live weeks should be approved by Ryan with no changes.
+- The goal of the project is that AI does the scheduling work, not Ryan.
 - If two live weeks fail, the project pauses automatically for review.
 
 ## 10. Risks and Ambiguities
@@ -242,6 +244,7 @@ Initial build should not:
 - 2×-average-wait trigger source — Airtable will supply the flag.
 - Area Readiness final scope — optional / pending Amy.
 - Exception interaction channel — required system capability, implementation owner TBD.
+- Revision-loop schema — structured reason codes for why a week's plan may need republishing; deferred until testing.
 - Hosting/deployment details — technical handoff needed; should remain a compact appendix.
 
 ### Superseded assumptions (spec §13)

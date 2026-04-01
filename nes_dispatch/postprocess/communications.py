@@ -29,6 +29,8 @@ _EXCLUSION_COMM_TYPES: dict[str, str] = {
     "V4_CATEGORY_BLOCKED": "Vehicle Restriction",
     "BOOKED_CAP_FULL": "Capacity Shortfall",
     "PROHIBITED_PAIR": "Scheduling Conflict",
+    "CAPACITY_FULL": "Capacity Shortfall",
+    "TIME_BUDGET": "Capacity Shortfall",
     "CLUSTER_RADIUS": "Geography Issue",
     "ROUTE_DROP": "Route Drop",
 }
@@ -45,6 +47,8 @@ _SEVERITY_MAP: dict[str, str] = {
     "V4_CATEGORY_BLOCKED": "Warning",
     "BOOKED_CAP_FULL": "Warning",
     "PROHIBITED_PAIR": "Warning",
+    "CAPACITY_FULL": "Warning",
+    "TIME_BUDGET": "Warning",
     "CLUSTER_RADIUS": "Warning",
     "ROUTE_DROP": "Warning",
 }

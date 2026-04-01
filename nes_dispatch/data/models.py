@@ -231,6 +231,7 @@ class WeeklyData:
     exceptions: list[WeeklyException] = field(default_factory=list)
     context: Optional[WeeklyContext] = None
     area_rules: list[AreaRule] = field(default_factory=list)
+    load_exclusions: list['Exclusion'] = field(default_factory=list)
 
 
 # ── Output / intermediate models ────────────────────────────────────────────

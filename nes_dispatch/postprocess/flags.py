@@ -1,12 +1,13 @@
 """Review-flag generation for post-processing (Technical Sketch §8).
 
-Produces the four flag codes that are NOT already emitted by earlier
+Produces the five flag codes that are NOT already emitted by earlier
 pipeline stages:
 
-* DUP_ADDR    (INFO)     — ≥2 jobs sharing a street address
-* WEAK_STANDBY (WARN)    — <threshold standby candidates for a route
-* HELPER_TRAVEL (WARN)   — helper depot >R from primary tech depot
-* GEOCODE_OOB  (CRITICAL) — job coordinates outside NE bounding box
+* DUP_ADDR              (INFO)     — ≥2 jobs sharing a street address
+* MISSING_PLANNED_HOURS (WARN)     — job lacks required_job_hours; engine defaulted
+* WEAK_STANDBY          (WARN)     — <threshold standby candidates for a route
+* HELPER_REQUIRED       (INFO)     — route contains helper-required jobs
+* GEOCODE_OOB           (CRITICAL) — job coordinates outside NE bounding box
 
 The remaining five flags (CROSS_AREA, VEH_BOTTLENECK, TECH_OVERLOAD,
 ROUTE_DROP, NO_FEASIBLE) are already generated upstream.

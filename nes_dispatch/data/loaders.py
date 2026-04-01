@@ -12,6 +12,7 @@ from typing import Any, Optional
 
 from .models import (
     Job, Technician, Vehicle, WeeklyException, WeeklyContext, AreaRule, WeeklyData,
+    Exclusion,
 )
 
 
@@ -84,18 +85,28 @@ def _parse_opt_int(raw: str) -> Optional[int]:
 # ── Per-entity loaders ──────────────────────────────────────────────────────
 
 
-def load_jobs(rows: list[dict[str, str]], skip_missing_geocode: bool = True) -> list[Job]:
+def load_jobs(rows: list[dict[str, str]], skip_missing_geocode: bool = True) -> tuple[list[Job], list[Exclusion]]:
     """Load Job records.  If *skip_missing_geocode* is True (default) and
-    a row has blank/unparseable lat/lon, the job is silently skipped
-    (spec §14.2: skip and continue the run)."""
+    a row has blank/unparseable lat/lon, the job is skipped and an
+    Exclusion record is created (spec §14.2: skip and continue the run).
+
+    Returns (jobs, exclusions).
+    """
     jobs: list[Job] = []
+    exclusions: list[Exclusion] = []
     for r in rows:
+        job_id = r.get("job_id", "").strip()
         # Graceful geocode handling (spec §14.2)
         lat_raw = r.get("latitude", "").strip()
         lon_raw = r.get("longitude", "").strip()
         if not lat_raw or not lon_raw:
             if skip_missing_geocode:
-                continue  # skip job; surfaced via communications
+                exclusions.append(Exclusion(
+                    job_id=job_id,
+                    reason_code="MISSING_GEOCODE",
+                    detail=f"Job {job_id} has missing coordinates; skipped.",
+                ))
+                continue
             lat_raw = lat_raw or "0.0"
             lon_raw = lon_raw or "0.0"
         try:
@@ -103,6 +114,11 @@ def load_jobs(rows: list[dict[str, str]], skip_missing_geocode: bool = True) -> 
             lon = float(lon_raw)
         except ValueError:
             if skip_missing_geocode:
+                exclusions.append(Exclusion(
+                    job_id=job_id,
+                    reason_code="MISSING_GEOCODE",
+                    detail=f"Job {job_id} has unparseable coordinates; skipped.",
+                ))
                 continue
             lat, lon = 0.0, 0.0
 
@@ -129,7 +145,7 @@ def load_jobs(rows: list[dict[str, str]], skip_missing_geocode: bool = True) -> 
             total_job_amount=_parse_opt_float(r.get("total_job_amount", "")),
             description=r.get("description", "").strip(),
         ))
-    return jobs
+    return jobs, exclusions
 
 
 def load_technicians(rows: list[dict[str, str]]) -> list[Technician]:
@@ -232,11 +248,14 @@ def load_weekly_data(data_dir: str | Path) -> WeeklyData:
     if rules_path.exists():
         area_rules = load_area_rules(_read_csv(rules_path))
 
+    jobs, load_exclusions = load_jobs(jobs_rows)
+
     return WeeklyData(
-        jobs=load_jobs(jobs_rows),
+        jobs=jobs,
         technicians=load_technicians(techs_rows),
         vehicles=load_vehicles(vehs_rows),
         exceptions=load_exceptions(exc_rows),
         context=context,
         area_rules=area_rules,
+        load_exclusions=load_exclusions,
     )

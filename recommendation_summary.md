@@ -16,7 +16,7 @@ Anything beyond this scope belongs in a later phase.
 | Component | Deliverable | Why it matters |
 |---|---|---|
 | **Data layer** | `loaders.py` + `validators.py` — load four-payload contract (Candidate Jobs, Weekly Context, Weekly Exceptions, Lookup/Rules Data) into typed dataclasses, run pre-run validation. Skip jobs with missing geocodes rather than abort. | Garbage-in protection. Every downstream decision depends on clean inputs. |
-| **Phase 1 — Queue-based decision-ladder scheduling** | Seasonal ranking (winter: Priority → 2×-average Normal → AQ/RS → Normal; summer: Priority → AQ/RS → Normal), eligibility checks (VEH_WORK_ELIGIBLE, ROUTE_SHAPE_OK, POSITION_OK, etc.), best-fit slot selection. | Core value: decide *which* jobs happen on *which* day, with *whom* and *what vehicle*. Every assignment traceable to a named rule. |
+| **Phase 1 — Queue-based decision-ladder scheduling** | Seasonal ranking (winter: Priority → 2×-average Normal → AQ/RS → Normal; summer: Priority → AQ/RS → Normal), 12 named eligibility rules, best-fit slot selection. | Core value: decide *which* jobs happen on *which* day, with *whom* and *what vehicle*. Every assignment traceable to a named rule. |
 | **Helper-required flagging** | Per route/day `helper_required = yes/no` flag. If any job on a route needs a helper, the entire route/day is helper-required. Configurable helper count (default 2). | Handles real-world two-person jobs. Does not assign helpers by name (spec §5). |
 | **Phase 2 — Nearest-neighbour routing** | NN stop ordering + feasibility verification (time, capacity). Drop and re-sequence if constraints violated. | Turns an abstract schedule into a drivable stop sequence. |
 | **Post-processing** | Standby ranking (2 per route), anchor-hold identification, Pre-Route Communications, Route Communications, review flags, exclusion report. | Owner sees structured review artifacts before approving the plan. |
@@ -32,6 +32,7 @@ Anything beyond this scope belongs in a later phase.
 |---|---|
 | **Assigning helpers by name** | Spec says yes/no flag only; named assignment deferred. |
 | **Revision-code logic** | Deferred until testing reveals real failure modes. |
+| **Revision-loop schema** | Structured reason codes for why a week's plan may need republishing; deferred until testing. |
 | **Scheduling Preferences detail source** | Queue stays; exact source of preference text pending Amy. |
 | **Radiator module tuning** | Formulas live in Airtable; Ryan still needs to set first real values. |
 | **2×-average-wait trigger source** | Airtable will supply the flag; implementation TBD. |
@@ -51,9 +52,10 @@ Anything beyond this scope belongs in a later phase.
 2. Ryan may start as early as Monday; freelancer may revise up to Thursday.
 3. If output is not usable by Thursday, Ryan reverts to manual for that week.
 4. Most live weeks should be approved by Ryan with no changes.
-5. One imperfect route does not fail the entire week, but routine rebuilding = failure.
-6. If two live weeks fail, the project pauses automatically for review.
-7. A re-run with identical inputs + config produces identical outputs (fully deterministic).
+5. The goal of the project is that AI does the scheduling work, not Ryan.
+6. One imperfect route does not fail the entire week, but routine rebuilding = failure.
+7. If two live weeks fail, the project pauses automatically for review.
+8. A re-run with identical inputs + config produces identical outputs (fully deterministic).
 
 ---
 
@@ -88,7 +90,7 @@ in route-quality improvements. Nearest-neighbour is sufficient for the Initial b
 |---|---|
 | **Trusting geocodes blindly** | Skip jobs with missing/bad geocodes rather than abort. A single wrong coordinate puts a job in the wrong cluster and corrupts the entire route. |
 | **Over-tuning parameters before data is stable** | Lock weights and thresholds at documented defaults. Tune only after 4+ weeks of real live-week runs with owner feedback. |
-| **Skipping the exclusion report** | The exclusion report is the owner's trust mechanism. If a job is dropped with no explanation, the owner assumes the engine is broken. Always emit a reason code (QUEUE_EXCLUDED, ROUTE_SHAPE, POSITION_CONFLICT, MISSING_GEOCODE, INVALID_CATEGORY). |
+| **Skipping the exclusion report** | The exclusion report is the owner's trust mechanism. If a job is dropped with no explanation, the owner assumes the engine is broken. Always emit a reason code (QUEUE_URGENT, QUEUE_ON_HOLD, NO_ELIGIBLE_TRIPLE, CAPACITY_FULL, MISSING_GEOCODE, INVALID_CATEGORY, etc.). |
 | **Making Airtable schema changes without versioning** | Any field rename or table restructure silently breaks `loaders.py`. Pin expected column names in a schema constant; fail fast on mismatch. The four-payload contract is the binding interface. |
 
 ---
@@ -113,7 +115,7 @@ questions. The items below are either **still open** or **partially answered**.
 |---|---|---|
 | 5 | **T_max (daily time budget)** | ⚠️ PARTIALLY — spec defines route capacity (winter 4+2, summer 3+2 jobs) and booking windows, but exact wall-clock T_max not stated. Config parameter. |
 | 6 | **Seasonal periods** | ✅ ANSWERED — `season` field in Weekly Context payload. Owner selects per-week. |
-| 7 | **Prohibited pairings** | ✅ SUPERSEDED — spec uses Weekly Exceptions (full tech-day blocks) instead of pairwise prohibitions. |
+| 7 | **Prohibited pairings** | ✅ ANSWERED — `NOT_PROHIBITED` is an active eligibility rule and `PROHIBITED_PAIR` is an active exclusion code. Pairwise prohibitions are supported. |
 | 8 | **Helper-needed flag source** | ✅ ANSWERED — derived from `job_category` (17-category table). Two-Man Work = helper-required. Route-level flag, no named assignment. |
 | 9 | **Output format preference** | ✅ ANSWERED — Transcription calendar (5×4 grid), Pre-Route / Route Communications, per-route maps, exclusion report. Review in-browser via Airtable interface. |
 

@@ -10,6 +10,7 @@ import math
 from typing import Any
 
 from .data.models import (
+    ALL_CATEGORIES,
     Exclusion,
     Job,
     ReviewFlag,
@@ -75,9 +76,10 @@ def apply_weekly_context(
 def apply_exclusion_filters(
     jobs: list[Job],
 ) -> tuple[list[Job], list[Exclusion]]:
-    """Partition jobs into candidates and exclusions based on queue.
+    """Partition jobs into candidates and exclusions based on queue and category.
 
     Per spec §4: Urgent and On Hold queues are excluded from scheduling.
+    Jobs with unrecognised categories are also excluded gracefully.
     Returns (candidates, exclusions).
     """
     candidates: list[Job] = []
@@ -95,6 +97,15 @@ def apply_exclusion_filters(
                 job_id=j.job_id,
                 reason_code="QUEUE_ON_HOLD",
                 detail=f"Queue '{j.queue}' — excluded until re-queued",
+            ))
+        elif j.job_category not in ALL_CATEGORIES:
+            exclusions.append(Exclusion(
+                job_id=j.job_id,
+                reason_code="INVALID_CATEGORY",
+                detail=(
+                    f"Job category '{j.job_category}' is not in the "
+                    f"17 recognised categories"
+                ),
             ))
         else:
             candidates.append(j)
@@ -606,7 +617,7 @@ def run_postprocessing(
         routes, standby, candidate_jobs, config,
     )
 
-    # Review flags (DUP_ADDR, WEAK_STANDBY, HELPER_TRAVEL, GEOCODE_OOB)
+    # Review flags (DUP_ADDR, MISSING_PLANNED_HOURS, WEAK_STANDBY, HELPER_REQUIRED, GEOCODE_OOB)
     flags = generate_review_flags(
         candidate_jobs, assignments, technicians, standby, config,
     )
